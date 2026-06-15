@@ -5,27 +5,27 @@ Extracts structured data from PDF/image invoices using GPT-4o via GitHub Models.
 
 ## Architecture
 
-```
-invoice.pdf / image
-       │
-       ▼
-┌─────────────────────┐
-│ DocumentPreprocessor│  Piece 1 — Normalize to 300 DPI PNGs
-└──────────┬──────────┘
-           │ list[ProcessedPage]
-           ▼
-┌─────────────────────┐
-│   InferenceWorker   │  Piece 2 — GPT-4o multimodal extraction
-└──────────┬──────────┘
-           │ {doc_metadata, extracted_entities}
-           ▼
-┌─────────────────────┐
-│   DocumentMapper    │  Piece 3 — Parse, validate, SAP payload
-└──────────┬──────────┘
-           │ InvoicePayload (dict)
-           ▼
-    JSON to stdout
-```
+                                                                                                                              ````
+                                                                                                                              invoice.pdf / image
+                                                                                                                                     │
+                                                                                                                                     ▼
+                                                                                                                              ┌─────────────────────┐
+                                                                                                                              │ DocumentPreprocessor│  Piece 1 — Normalize to 300 DPI PNGs
+                                                                                                                              └──────────┬──────────┘
+                                                                                                                                         │ list[ProcessedPage]
+                                                                                                                                         ▼
+                                                                                                                              ┌─────────────────────┐
+                                                                                                                              │   InferenceWorker   │  Piece 2 — GPT-4o multimodal extraction
+                                                                                                                              └──────────┬──────────┘
+                                                                                                                                         │ {doc_metadata, extracted_entities}
+                                                                                                                                         ▼
+                                                                                                                              ┌─────────────────────┐
+                                                                                                                              │   DocumentMapper    │  Piece 3 — Parse, validate, SAP payload
+                                                                                                                              └──────────┬──────────┘
+                                                                                                                                         │ InvoicePayload (dict)
+                                                                                                                                         ▼
+                                                                                                                                  JSON to stdout
+                                                                                                                              ````
 
 # How to Run & Test the Stack
 
