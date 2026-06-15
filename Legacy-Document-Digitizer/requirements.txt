@@ -1,0 +1,9 @@
+requests
+psycopg2-binary
+python-dotenv
+pika
+pydantic
+openai
+Pillow
+pymupdf
+pdf2image

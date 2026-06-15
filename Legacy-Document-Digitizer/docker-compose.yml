@@ -1,0 +1,78 @@
+services:
+  # 1. The Message Broker (RabbitMQ)
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: sap-rabbitmq
+    ports:
+      - "5672:5672"   # The internal port Spring Boot and Python will use to talk
+      - "15672:15672" # The web UI port for you to watch the queues visually
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: password
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # 2. The Database (PostgreSQL)
+  postgres:
+    image: postgres:15-alpine
+    container_name: sap-postgres
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: sap_invoices
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d sap_invoices"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 3. The AI Worker Swarm (Your Python Pipeline)
+  ai-worker:
+    build: .
+    image: sap-invoice-pipeline
+    # This 'deploy' block tells Docker to keep exactly 3 workers running 24/7
+    deploy:
+      replicas: 3
+    environment:
+      # We use ${GITHUB_TOKEN} to pull securely from a .env file
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - MODEL_NAME=gpt-4o
+      # Network connections to the other containers
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_USER=admin
+      - RABBITMQ_PASS=password
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USER=admin
+      - POSTGRES_PASS=password
+      - POSTGRES_DB=sap_invoices
+    volumes:
+      # Mounts your local Windows data folder to all 3 containers
+      - ./data:/app/data
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+  # 4. Local Azure Storage Emulator (Azurite)
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    container_name: sap-azurite
+    ports:
+      - "10000:10000" # Blob storage port (This is what Spring Boot will talk to)
+      - "10001:10001" # Queue storage port
+      - "10002:10002" # Table storage port
+    volumes:
+      - azurite-data:/data
+    command: "azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 --location /data"
+
+volumes:
+  # This ensures your database doesn't wipe itself if the container restarts
+  pgdata:
+  azurite-data:

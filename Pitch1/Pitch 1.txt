@@ -1,0 +1,34 @@
+Pitch 1 : Automated Legacy Document Digitizer
+
+Problem - When a client is transitioned to SAP, they have thousands of legacy PDF's to batch process or, in even worse cases, manually typing them into the latest SAP MM or FICO.
+
+Solution - Object detection does it for you
+						PDF -> Python ML Miro-service -> Data extraction -> Text (SAP format-friendly) 
+
+But it is not as simple as passing a 100 pdf's to a frontend, backend processes it, pdfs are fully stored in database without us bothering about their sizes, "Export to SAP".
+NO. NOT AT ALL. SYSTEM WILL CRASH IN 2 SECONDS. it will hardly work for 5 pdfs. It becomes a liability not an asset.
+
+End of the world? Probably not
+
+Core problem in the previous implementation - Its synchronous processing. Only when one pdf completes, we see the next pdf. One after the other fashion that leads to infinite waiting, browser crash, server crash what other nightmares.
+
+How to solve this - Asynchronous event driven architecture
+
+The architecture is a simple 3 tier system
+
+Tier 1 (Storage) - When I upload a PDF, it needn't waste resource by passing through the application server - let it be stored directly in Object Storage (like AWS S3). The DB we create in a full stack environment (typically like MongoDB or SQL), we will store not the PDF, but very lightweight metadata reference to the PDF lying in the Object Storage (its like Pass by value and Pass by reference). How we do this - backend wont read or even see the file, it will simply connect the object storage with the react frontend. 
+
+Tier 2 (Decoupled messaging tier) - We implement a message broker(RabbitMQ or Apache Kafka). In simple terms, this is the main brain behind the entire asynchronous architecture - when we upload a say 50 files, the second file needn't wait until the first file is fully uploaded and processed, once first file is uploaded, immediately upload second file also, and how do u know second file is waiting to get processed????? - the message broker flags an event ("theres a file which is already uploaded, O DEAR EVENT QUEUE please look at it when you are done with your previous job")
+
+Tier 3 (Worker tier) - Very similar to Naruto's shadow clone jutsu - if one Naruto can only vandalize one face (maybe minato) at a time, you hav 3 others to do it to sarutobi, tobirama and hashirama at the same time. if it was just one face, one Naruto would be enough. here Naruto - worker microservices (which are containerized python scripts running the entire AI blood). The communicate with the message broker we spoke of earlier, they pull a poll (message broker is like a hirer who says theres a job opportunity, and the worker microservices is an ambitious lad who pulls that job and we have multiple instances of them thanks to containerization). Point of this - u can isolate the ai model part
+
+Overall Flow 
+
+User uploads files -> File is stored in AWS S3 -> Backend gets the http request and flags this as a ticket to the event wheel (RabbitMQ) -> Backend replies a HTTP response saying "Acknowledged, I am processing it" -> Workers flood in and do the job of the AI component, they grab a ticket, read the file, run the AI, update the DB ->User dashboard says complete
+
+So in the end, we have raw pdf or pdf(s), u convert the data in them to SAP format which is probably done by a transformer (encoder decoder architecture)
+
+
+Why this is a good project - SAP's clean core strategy - best practices include heavy custom business logic should not be built directly inside S/4HANA, they should be built as side-by-side extensions. This project is a classic example of such a side by side extension. It lives outside the core ERP, making sure it keeps the system clean and upgradeable, but it is tightly integrated into the ERP workflow because we use API's and event meshes. What we are doing is we take unstructured data, process it through an AI worker and format it strictly into OData structures so it can be ingested cleanly into SAP MM or FICO modules. We are solving ERP data-bottleneck using SAP's officially recommended side-by-side extension architecture. 	
+
+
