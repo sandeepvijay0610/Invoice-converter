@@ -18,13 +18,29 @@ public class BlobStorageService {
     private final BlobServiceClient blobServiceClient;
     private final String containerName = "invoices";
 
-    // Constructor injection grabs the connection string from your application.properties
-    public BlobStorageService(@Value("${azure.storage.connection-string}") String connectionString) {
+    // FIX: Spring Boot's OWN client (used to create the container, and to
+    // build the BlobClient that generates the SAS) must always reach
+    // Azurite at its real network address — "azurite" (the Docker service
+    // name) when running in Docker, "127.0.0.1" when running locally on the
+    // host. That's what azure.storage.connection-string controls, and it is
+    // never browser-facing.
+    //
+    // The browser, however, runs OUTSIDE Docker and can only reach Azurite
+    // via the published port on 127.0.0.1. So the SAS URL handed back to the
+    // browser needs its host rewritten to azure.storage.public-host, which
+    // defaults to 127.0.0.1 and only needs to change if you expose Azurite
+    // under a different public hostname (e.g. a real Azure Storage account
+    // in production, where this rewrite is skipped entirely).
+    private final String publicBlobHost;
+
+    public BlobStorageService(
+            @Value("${azure.storage.connection-string}") String connectionString,
+            @Value("${azure.storage.public-host:127.0.0.1}") String publicBlobHost) {
         this.blobServiceClient = new BlobServiceClientBuilder()
                 .connectionString(connectionString)
                 .buildClient();
-        
-        // Auto-create the 'invoices' bucket in Azurite if it doesn't exist yet
+        this.publicBlobHost = publicBlobHost;
+
         BlobContainerClient containerClient = blobServiceClient.getBlobContainerClient(containerName);
         if (!containerClient.exists()) {
             containerClient.create();
@@ -32,29 +48,51 @@ public class BlobStorageService {
     }
 
     /**
-     * Generates a secure, temporary upload URL for the React frontend
+     * Result of an upload-URL request: the short-lived SAS URL for the browser
+     * to PUT against, plus the bare blob name (no token) that gets persisted
+     * and queued for the worker.
      */
-    public String generateUploadUrl(String originalFilename) {
-        // 1. Sanitize the filename with a UUID so it is guaranteed unique
-        // Example: clean.pdf -> 550e8400-e29b-41d4-a716-446655440000-clean.pdf
+    public record UploadTarget(String uploadUrl, String blobName) {}
+
+    /**
+     * Generates a secure, temporary upload URL for the React frontend.
+     *
+     * FIX (vulnerability A — "SAS Token Time-Bomb"):
+     * Previously this returned only the SAS URL, which was the same string
+     * persisted to Postgres and pushed onto RabbitMQ. If a worker picked the
+     * message up more than 15 minutes after it was queued, the SAS token had
+     * already expired and the download would 403.
+     *
+     * Now we return BOTH the SAS URL (for the browser's one-time PUT) and the
+     * bare blob name (no token, never expires) separately. Only the blob name
+     * gets stored/queued — the worker fetches the blob directly via the master
+     * connection string (see InferenceWorker's companion fetch in Python),
+     * which never expires and isn't a network-fetchable URL at all.
+     */
+    public UploadTarget generateUploadTarget(String originalFilename) {
         String uniqueFilename = UUID.randomUUID().toString() + "-" + originalFilename;
 
-        // 2. Get a reference to exactly where this file will live
         BlobContainerClient containerClient = blobServiceClient.getBlobContainerClient(containerName);
         BlobClient blobClient = containerClient.getBlobClient(uniqueFilename);
 
-        // 3. Define the SAS (Shared Access Signature) permissions
-        // React only needs permission to Create and Write the file, nothing else.
         BlobSasPermission sasPermission = new BlobSasPermission()
                 .setReadPermission(true)
                 .setWritePermission(true)
                 .setCreatePermission(true);
 
-        // 4. Set the expiration time (React has exactly 15 minutes to upload it)
         BlobServiceSasSignatureValues sasValues = new BlobServiceSasSignatureValues(
                 OffsetDateTime.now().plusMinutes(15), sasPermission);
 
-        // 5. Generate and return the final secure URL string
-        return blobClient.getBlobUrl() + "?" + blobClient.generateSas(sasValues);
+        String uploadUrl = blobClient.getBlobUrl() + "?" + blobClient.generateSas(sasValues);
+
+        // Rewrite whatever host the SDK baked in (the Docker service name,
+        // e.g. "azurite") to the publicly-reachable host the browser can
+        // actually connect to. This only touches the hostname segment of
+        // the URL — the SAS signature itself is unaffected since signatures
+        // don't cover the host.
+        uploadUrl = uploadUrl.replaceFirst("://[^/:]+:", "://" + publicBlobHost + ":");
+
+        // blobName is just "invoices/<uuid>-clean.pdf" — no host, no token, no expiry.
+        return new UploadTarget(uploadUrl, uniqueFilename);
     }
 }

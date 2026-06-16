@@ -6,12 +6,13 @@ import os
 import json
 import logging
 import time
-import requests
 import tempfile
 from pathlib import Path
 
 import pika
 import psycopg2
+import psycopg2.pool
+from azure.storage.blob import BlobServiceClient
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -25,26 +26,61 @@ RABBITMQ_USER = os.getenv("RABBITMQ_USER", "admin")
 RABBITMQ_PASS = os.getenv("RABBITMQ_PASS", "password")
 QUEUE_NAME = "invoice_requests"
 
-# PostgreSQL config - Docker internal network
-DB_HOST = os.getenv("DB_HOST", "sap-postgres")
-DB_PORT = os.getenv("DB_PORT", "5432")  # Internal container port
+DB_HOST = os.getenv("DB_HOST", "postgres")
+DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "sap_invoices")
 DB_USER = os.getenv("DB_USER", "admin")
 DB_PASS = os.getenv("DB_PASS", "password")
 
+# FIX (vulnerability A & B): The worker now talks to Azure/Azurite directly
+# via the SDK and a master connection string — never over an HTTP SAS URL
+# that could expire mid-queue-backlog (vuln A), and never via a hardcoded
+# "127.0.0.1 -> sap-azurite" string replace that would corrupt URLs in any
+# real cloud deployment (vuln B). The connection string itself carries the
+# right host for whichever environment we're in (local Azurite vs Docker vs
+# real Azure), so main.py needs zero environment-specific hacks.
+AZURE_STORAGE_CONNECTION_STRING = os.getenv(
+    "AZURE_STORAGE_CONNECTION_STRING",
+    "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;"
+    "AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;"
+    "BlobEndpoint=http://azurite:10000/devstoreaccount1;",
+)
+BLOB_CONTAINER_NAME = os.getenv("BLOB_CONTAINER_NAME", "invoices")
 
-def update_invoice_status(doc_id: str, status: str, payload: dict = None) -> None:
-    """Update invoice status and extracted payload in PostgreSQL."""
-    try:
-        conn = psycopg2.connect(
+_db_pool: psycopg2.pool.SimpleConnectionPool | None = None
+_blob_service_client: BlobServiceClient | None = None
+
+
+def _get_pool() -> psycopg2.pool.SimpleConnectionPool:
+    global _db_pool
+    if _db_pool is None:
+        _db_pool = psycopg2.pool.SimpleConnectionPool(
+            minconn=1,
+            maxconn=5,
             host=DB_HOST,
             port=DB_PORT,
             dbname=DB_NAME,
             user=DB_USER,
-            password=DB_PASS
+            password=DB_PASS,
         )
+    return _db_pool
+
+
+def _get_blob_client() -> BlobServiceClient:
+    global _blob_service_client
+    if _blob_service_client is None:
+        _blob_service_client = BlobServiceClient.from_connection_string(
+            AZURE_STORAGE_CONNECTION_STRING
+        )
+    return _blob_service_client
+
+
+def update_invoice_status(doc_id: str, status: str, payload: dict = None) -> None:
+    """Update invoice status and extracted payload in PostgreSQL."""
+    pool = _get_pool()
+    conn = pool.getconn()
+    try:
         cursor = conn.cursor()
-        
         if payload:
             payload_json = json.dumps(payload)
             cursor.execute(
@@ -56,91 +92,136 @@ def update_invoice_status(doc_id: str, status: str, payload: dict = None) -> Non
                 "UPDATE invoices SET status = %s WHERE doc_id = %s",
                 (status, doc_id)
             )
-        
         conn.commit()
         cursor.close()
-        conn.close()
-        
-        logger.info("📊 DB updated | doc_id=%s status=%s", doc_id, status)
-        
+        logger.info("DB updated | doc_id=%s status=%s", doc_id, status)
     except Exception as e:
-        logger.error("❌ DB update failed | doc_id=%s error=%s", doc_id, str(e))
+        logger.error("DB update failed | doc_id=%s error=%s", doc_id, str(e))
+        conn.rollback()
+    finally:
+        pool.putconn(conn)
+
+
+def download_blob_to_tempfile(blob_name: str) -> str:
+    """
+    Download a blob by name (no SAS token, no expiry) using the master
+    connection string, and write it to a temp file preserving the real
+    extension so the preprocessor routes it correctly (PDF vs image).
+    """
+    blob_service_client = _get_blob_client()
+    container_client = blob_service_client.get_container_client(BLOB_CONTAINER_NAME)
+    blob_client = container_client.get_blob_client(blob_name)
+
+    ext = Path(blob_name).suffix.lower() or ".pdf"
+    if ext not in {".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".bmp", ".webp"}:
+        ext = ".pdf"
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
+    download_stream = blob_client.download_blob()
+    tmp.write(download_stream.readall())
+    tmp.close()
+    return tmp.name
+
+
+MAX_RATE_LIMIT_REQUEUES = int(os.getenv("MAX_RATE_LIMIT_REQUEUES", "10"))
 
 
 def process_message(ch, method, properties, body) -> None:
     try:
         message = json.loads(body)
-        file_path = message.get("file_path")
+        # blob_name is now a bare blob path like "550e8400-...-clean.pdf",
+        # not a URL — see BlobStorageService.UploadTarget on the Java side.
+        blob_name = message.get("file_path")
         doc_id = message.get("doc_id", f"auto-{int(time.time())}")
-        
-        logger.info("📥 Received | doc_id=%s url=%s", doc_id, file_path)
-        
-        # Update status to PROCESSING
+
+        logger.info("Received | doc_id=%s blob=%s", doc_id, blob_name)
+
         update_invoice_status(doc_id, "PROCESSING")
-        
-        # Fix Azurite URL for Docker internal network
-        file_path = file_path.replace("127.0.0.1", "sap-azurite")
-        
-        # Download from Azure Blob Storage to a temp file
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-        response = requests.get(file_path, timeout=60)
-        response.raise_for_status()
-        tmp.write(response.content)
-        tmp.close()
-        
-        logger.info("📥 Downloaded to %s", tmp.name)
-        
-        # Process the local temp file
-        result = run_pipeline(file_path=tmp.name, doc_id=doc_id)
-        
-        # Clean up
-        Path(tmp.name).unlink()
-        
-        # Update status and payload in database
+
+        tmp_path = download_blob_to_tempfile(blob_name)
+        logger.info("Downloaded to %s", tmp_path)
+
+        result = run_pipeline(file_path=tmp_path, doc_id=doc_id)
+
+        Path(tmp_path).unlink(missing_ok=True)
+
         status = result.get("status", "REQUIRES_MANUAL_REVIEW")
+
+        if status == "RATE_LIMITED":
+            # x-delivery-count is set by RabbitMQ itself when a message is
+            # requeued via basic_nack — no custom header bookkeeping needed.
+            # Once we've requeued this same message too many times (i.e.
+            # the outage is sustained, not a blip), stop looping and hand it
+            # to a human instead of retrying forever.
+            delivery_count = 0
+            if properties.headers:
+                delivery_count = properties.headers.get("x-delivery-count", 0)
+
+            if delivery_count >= MAX_RATE_LIMIT_REQUEUES:
+                logger.error(
+                    "Rate limit persisted past %d requeues | doc_id=%s — "
+                    "escalating to REQUIRES_MANUAL_REVIEW instead of looping forever.",
+                    MAX_RATE_LIMIT_REQUEUES, doc_id,
+                )
+                update_invoice_status(doc_id, "REQUIRES_MANUAL_REVIEW", result)
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+                return
+
+            update_invoice_status(doc_id, status, result)
+            logger.warning(
+                "Requeueing rate-limited message | doc_id=%s attempt=%d/%d",
+                doc_id, delivery_count + 1, MAX_RATE_LIMIT_REQUEUES,
+            )
+            # Nothing wrong with this document — the provider is just out
+            # of capacity right now. Requeue (don't dead-letter) so a worker
+            # picks it back up once capacity frees up. A short sleep avoids
+            # immediately re-colliding with whatever just rate-limited us.
+            time.sleep(5)
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+            return
+
         update_invoice_status(doc_id, status, result)
-        
-        logger.info("✅ Done | doc_id=%s status=%s", doc_id, status)
+        logger.info("Done | doc_id=%s status=%s", doc_id, status)
         ch.basic_ack(delivery_tag=method.delivery_tag)
-        
+
     except Exception as e:
-        logger.error("❌ Failed | error=%s", str(e))
+        logger.error("Failed | error=%s", str(e), exc_info=True)
         try:
             msg = json.loads(body)
             update_invoice_status(msg.get("doc_id", "UNKNOWN"), "FAILED")
-        except:
+        except Exception:
             pass
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
 
 def main() -> None:
     configure_logging()
-    
-    logger.info("🚀 AI Worker booting. Connecting to RabbitMQ at %s...", RABBITMQ_HOST)
-    
+
+    logger.info("AI Worker booting. Connecting to RabbitMQ at %s...", RABBITMQ_HOST)
+
     time.sleep(5)
-    
+
     credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASS)
     parameters = pika.ConnectionParameters(
         host=RABBITMQ_HOST,
         credentials=credentials,
         heartbeat=600,
-        blocked_connection_timeout=300
+        blocked_connection_timeout=300,
     )
-    
+
     connection = pika.BlockingConnection(parameters)
     channel = connection.channel()
-    
+
     channel.queue_declare(queue=QUEUE_NAME, durable=True)
     channel.basic_qos(prefetch_count=1)
     channel.basic_consume(queue=QUEUE_NAME, on_message_callback=process_message)
-    
-    logger.info("🎧 Worker is actively listening to '%s'. Waiting for invoices...", QUEUE_NAME)
-    
+
+    logger.info("Worker listening on '%s'. Waiting for invoices...", QUEUE_NAME)
+
     try:
         channel.start_consuming()
     except KeyboardInterrupt:
-        logger.info("🛑 Worker shutting down...")
+        logger.info("Worker shutting down...")
         channel.stop_consuming()
     finally:
         connection.close()

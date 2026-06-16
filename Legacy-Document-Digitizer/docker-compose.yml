@@ -4,8 +4,8 @@ services:
     image: rabbitmq:3-management
     container_name: sap-rabbitmq
     ports:
-      - "5672:5672"   # The internal port Spring Boot and Python will use to talk
-      - "15672:15672" # The web UI port for you to watch the queues visually
+      - "5672:5672"
+      - "15672:15672"
     environment:
       RABBITMQ_DEFAULT_USER: admin
       RABBITMQ_DEFAULT_PASS: password
@@ -33,46 +33,95 @@ services:
       timeout: 5s
       retries: 5
 
-  # 3. The AI Worker Swarm (Your Python Pipeline)
-  ai-worker:
-    build: .
-    image: sap-invoice-pipeline
-    # This 'deploy' block tells Docker to keep exactly 3 workers running 24/7
-    deploy:
-      replicas: 3
+  # 3. Local Azure Storage Emulator (Azurite)
+  # Renamed service to "azurite" (was "sap-azurite") so the SAME
+  # connection-string hostname works whether you're inside this compose
+  # network or pointing at a real Azure account later: only the
+  # AZURE_STORAGE_CONNECTION_STRING value changes between environments,
+  # never the application code.
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    container_name: sap-azurite
+    hostname: azurite
+    ports:
+      - "10000:10000"
+      - "10001:10001"
+      - "10002:10002"
+    volumes:
+      - azurite-data:/data
+    command: "azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 --location /data --skipApiVersionCheck"
+
+  # 4. Spring Boot API
+  invoice-api:
+    build:
+      context: ../invoice-api
+      dockerfile: Dockerfile
+    container_name: sap-invoice-api
+    ports:
+      - "8081:8080"
     environment:
-      # We use ${GITHUB_TOKEN} to pull securely from a .env file
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/sap_invoices
+      SPRING_DATASOURCE_USERNAME: admin
+      SPRING_DATASOURCE_PASSWORD: password
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_PORT: 5672
+      SPRING_RABBITMQ_USERNAME: admin
+      SPRING_RABBITMQ_PASSWORD: password
+      # FIX (vulnerability B): the SAS URL generated for the browser still
+      # needs a browser-reachable host (127.0.0.1 via the published port),
+      # but the bare blob name we now persist/queue is host-agnostic — so
+      # this only affects the upload step, never backend-to-backend fetch.
+      # invoice-api runs INSIDE this Docker network, so its own client must
+      # reach Azurite at the service name "azurite" — never 127.0.0.1 (that
+      # would be the invoice-api container's own loopback, hence the
+      # "Connection refused" error this fixes).
+      AZURE_STORAGE_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;"
+      # The browser, on the other hand, runs on your Windows host OUTSIDE
+      # Docker and can only reach Azurite via the published port on
+      # 127.0.0.1 — so the SAS URL we hand back to it gets its host rewritten
+      # to this value (see BlobStorageService.generateUploadTarget).
+      AZURE_STORAGE_PUBLIC_HOST: "127.0.0.1"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      azurite:
+        condition: service_started
+
+  # 5. AI Worker(s)
+  # Scale with: docker compose up --scale ai-worker=3
+  ai-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sap-invoice-pipeline
+    environment:
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - MODEL_NAME=gpt-4o
-      # Network connections to the other containers
       - RABBITMQ_HOST=rabbitmq
       - RABBITMQ_USER=admin
       - RABBITMQ_PASS=password
-      - POSTGRES_HOST=postgres
-      - POSTGRES_USER=admin
-      - POSTGRES_PASS=password
-      - POSTGRES_DB=sap_invoices
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=admin
+      - DB_PASS=password
+      - DB_NAME=sap_invoices
+      # FIX (vulnerability A & B): worker fetches blobs directly via the SDK
+      # using this connection string — hostname is "azurite" (the Docker
+      # service name), no SAS token, no expiry, no string-replace hacks.
+      - AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;
+      - BLOB_CONTAINER_NAME=invoices
     volumes:
-      # Mounts your local Windows data folder to all 3 containers
       - ./data:/app/data
     depends_on:
       rabbitmq:
         condition: service_healthy
       postgres:
         condition: service_healthy
-  # 4. Local Azure Storage Emulator (Azurite)
-  azurite:
-    image: mcr.microsoft.com/azure-storage/azurite
-    container_name: sap-azurite
-    ports:
-      - "10000:10000" # Blob storage port (This is what Spring Boot will talk to)
-      - "10001:10001" # Queue storage port
-      - "10002:10002" # Table storage port
-    volumes:
-      - azurite-data:/data
-    command: "azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 --location /data"
+      azurite:
+        condition: service_started
 
 volumes:
-  # This ensures your database doesn't wipe itself if the container restarts
   pgdata:
   azurite-data:

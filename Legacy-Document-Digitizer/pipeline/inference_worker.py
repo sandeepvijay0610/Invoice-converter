@@ -48,10 +48,12 @@ class _HeaderData(BaseModel):
 
 
 class _FinancialData(BaseModel):
+    tax_regime: Optional[str] = Field(None, description="Tax regime: 'GST', 'EXCISE', 'INTERNATIONAL', or 'NONE'")
     base_amount: Optional[float] = Field(None, description="Taxable base amount before tax")
     cgst_amount: Optional[float] = Field(None, description="Central GST amount (intra-state)")
     sgst_amount: Optional[float] = Field(None, description="State GST amount (intra-state)")
     igst_amount: Optional[float] = Field(None, description="Integrated GST amount (inter-state)")
+    other_tax_amount: Optional[float] = Field(None, description="Sum of non-GST tax/duty lines: Excise, CST, VAT, service tax, international VAT/sales tax")
     total_invoice_amount: Optional[float] = Field(None, description="Grand total including all taxes")
 
 
@@ -74,21 +76,42 @@ class _InvoiceSchema(BaseModel):
 # ---------------------------------------------------------------------------
 
 _SINGLE_PAGE_SYSTEM_PROMPT = (
-    "You are an invoice extraction system specialized in Indian GST invoices. "
+    "You are an invoice extraction system that handles both modern Indian GST "
+    "invoices and legacy/non-GST invoices (pre-2017 Central Excise Duty + CST/VAT, "
+    "service tax, or international invoices with VAT/sales tax). "
+    "First identify the tax_regime: 'GST' if you see CGST/SGST/IGST line items, "
+    "'EXCISE' if you see Excise Duty/CST/VAT/service tax (typically pre-2017 Indian "
+    "invoices), 'INTERNATIONAL' for non-Indian VAT/sales tax, or 'NONE' if there is "
+    "no tax shown at all. "
+    "If tax_regime is 'GST', populate cgst_amount/sgst_amount/igst_amount and leave "
+    "other_tax_amount null. If tax_regime is 'EXCISE' or 'INTERNATIONAL', add all "
+    "non-GST tax/duty line amounts together into other_tax_amount and leave "
+    "cgst_amount/sgst_amount/igst_amount null. "
     "Extract all header fields, financial totals, and line items from the invoice image. "
     "For dates, always use YYYY-MM-DD format. If you see a 2-digit year, "
     "expand it to the full 4-digit year based on context. "
     "For amounts, extract the numeric value without currency symbols. "
     "If a field is not present, leave it null. "
-    "For GSTIN fields, extract the 15-character alphanumeric code. "
-    "Vendor (seller) GSTIN is usually at the top or top-left; "
-    "buyer GSTIN is in the 'Bill To' section."
+    "For GSTIN fields, extract the 15-character alphanumeric code; leave null if "
+    "this is a pre-GST or international invoice with no GSTIN. "
+    "Vendor (seller) tax ID is usually at the top or top-left; "
+    "buyer tax ID is in the 'Bill To' section."
 )
 
 _MULTI_PAGE_SYSTEM_PROMPT = (
-    "You are an invoice extraction system specialized in Indian GST invoices. "
+    "You are an invoice extraction system that handles both modern Indian GST "
+    "invoices and legacy/non-GST invoices (pre-2017 Central Excise Duty + CST/VAT, "
+    "service tax, or international invoices with VAT/sales tax). "
     "You will receive multiple page images from a SINGLE invoice document. "
     "Combine information from all pages into ONE invoice extraction. "
+    "First identify the tax_regime: 'GST' if you see CGST/SGST/IGST line items, "
+    "'EXCISE' if you see Excise Duty/CST/VAT/service tax (typically pre-2017 Indian "
+    "invoices), 'INTERNATIONAL' for non-Indian VAT/sales tax, or 'NONE' if there is "
+    "no tax shown at all. "
+    "If tax_regime is 'GST', populate cgst_amount/sgst_amount/igst_amount and leave "
+    "other_tax_amount null. If tax_regime is 'EXCISE' or 'INTERNATIONAL', add all "
+    "non-GST tax/duty line amounts together into other_tax_amount and leave "
+    "cgst_amount/sgst_amount/igst_amount null. "
     "If the same field appears on multiple pages, use the most complete version. "
     "For line items, include ALL items from ALL pages. "
     "For financial totals, use the values from the LAST page (the summary page). "
@@ -344,11 +367,13 @@ class InferenceWorker:
                 entities.append(self._entity(label, str(value), confidence=0.95))
 
         financial_fields = [
-            ("base_amount",          fd.base_amount),
-            ("cgst_amount",          fd.cgst_amount),
-            ("sgst_amount",          fd.sgst_amount),
-            ("igst_amount",          fd.igst_amount),
-            ("total_invoice_amount", fd.total_invoice_amount),
+            ("tax_regime",            fd.tax_regime),
+            ("base_amount",           fd.base_amount),
+            ("cgst_amount",           fd.cgst_amount),
+            ("sgst_amount",           fd.sgst_amount),
+            ("igst_amount",           fd.igst_amount),
+            ("other_tax_amount",      fd.other_tax_amount),
+            ("total_invoice_amount",  fd.total_invoice_amount),
         ]
         for label, value in financial_fields:
             if value is not None:

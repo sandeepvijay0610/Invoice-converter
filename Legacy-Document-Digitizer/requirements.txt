@@ -7,3 +7,4 @@ openai
 Pillow
 pymupdf
 pdf2image
+azure-storage-blob

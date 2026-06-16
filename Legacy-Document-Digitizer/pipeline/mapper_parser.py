@@ -31,6 +31,7 @@ from .config import (
     LINE_ITEM_LABELS,
     MATH_TOLERANCE,
     REQUIRED_FIELDS,
+    REQUIRED_FIELDS_GST_ONLY,
     SAP_COMPANY_CODE,
     SAP_CURRENCY,
     SAP_DOC_TYPE,
@@ -42,14 +43,12 @@ logger = logging.getLogger(__name__)
 # Internal constants
 # ---------------------------------------------------------------------------
 
-# Labels the pipeline may emit that should be silently ignored
 _DISTRACTOR_LABELS: frozenset[str] = frozenset({"base_amount_label"})
 
 _ALL_VALID_LABELS: frozenset[str] = (
     HEADER_LABELS | FINANCIAL_LABELS | LINE_ITEM_LABELS | _DISTRACTOR_LABELS
 )
 
-# Compiled patterns — defined once at module load
 _GSTIN_RE = re.compile(
     r'\b(\d{2}[A-Z]{5}\d{4}[A-Z][A-Z\d]Z[A-Z\d])\b', re.IGNORECASE
 )
@@ -122,10 +121,12 @@ class HeaderData(BaseModel):
 
 
 class FinancialData(BaseModel):
+    tax_regime: str | None = None
     base_amount: float | None = None
     cgst_amount: float | None = None
     sgst_amount: float | None = None
     igst_amount: float | None = None
+    other_tax_amount: float | None = None
     total_invoice_amount: float | None = None
     tax_code: str | None = None
 
@@ -249,16 +250,6 @@ class DocumentMapper:
     def _collect_entities(
         pages: list[dict[str, Any]],
     ) -> tuple[dict[str, dict], dict[int, dict[str, dict]]]:
-        """
-        Walk all entity dicts and keep the highest-confidence value per label.
-
-        Returns
-        -------
-        best_hf : dict[label → entity_dict]
-            Best header/financial entity per label.
-        best_li : dict[item_index → dict[label → entity_dict]]
-            Best entity per label per line-item index.
-        """
         best_hf: dict[str, dict[str, Any]] = {}
         best_li: dict[int, dict[str, dict[str, Any]]] = {}
 
@@ -309,7 +300,13 @@ class DocumentMapper:
 
             raw: str = entity.get("text", "")
 
-            if label in FINANCIAL_LABELS:
+            if label == "tax_regime":
+                normalized_regime = raw.strip().upper()
+                result[label] = normalized_regime if normalized_regime in {
+                    "GST", "EXCISE", "INTERNATIONAL", "NONE"
+                } else None
+
+            elif label in FINANCIAL_LABELS:
                 result[label] = self.parse_amount(raw)
 
             elif label == "invoice_date":
@@ -358,7 +355,7 @@ class DocumentMapper:
         return result
 
     # ------------------------------------------------------------------
-    # Parsers (static — usable independently in tests)
+    # Parsers
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -375,7 +372,6 @@ class DocumentMapper:
             except ValueError:
                 continue
 
-        # Last resort: bare DD MM YYYY pattern
         m = re.search(r'(\d{2})\s+(\d{2})\s+(\d{4})', cleaned)
         if m:
             return f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
@@ -391,7 +387,6 @@ class DocumentMapper:
         cleaned = re.sub(r'(Rs\.?|INR|USD|EUR|\$|₹|€|£)', '', cleaned, flags=re.IGNORECASE)
         cleaned = cleaned.replace(',', '').replace("'", '').strip()
 
-        # Handle space-as-thousands-separator with 2-digit decimal: "86 262 86" → "86262.86"
         if re.search(r'\d \d{2}$', cleaned):
             cleaned = cleaned.replace(' ', '.')
         parts = cleaned.split('.')
@@ -431,22 +426,33 @@ class DocumentMapper:
         cgst = normalised.get("cgst_amount") or 0.0
         sgst = normalised.get("sgst_amount") or 0.0
         igst = normalised.get("igst_amount") or 0.0
-        calculated = base + cgst + sgst + igst
+        # FIX (vulnerability C): other_tax_amount covers non-GST tax lines
+        # (Central Excise Duty, CST, VAT, service tax, international VAT/sales
+        # tax). Previously the math check only summed GST components, so any
+        # pre-GST or international invoice with real tax on it would compute
+        # calculated = base only, fail the total check, and get bounced to
+        # manual review even when the AI extracted every figure correctly.
+        other_tax = normalised.get("other_tax_amount") or 0.0
+        calculated = base + cgst + sgst + igst + other_tax
 
-        # All tax components absent: only valid if base == total (0% tax)
         no_tax = (
             normalised.get("cgst_amount") is None
             and normalised.get("sgst_amount") is None
             and normalised.get("igst_amount") is None
+            and normalised.get("other_tax_amount") is None
         )
+
+        effective_tolerance = max(MATH_TOLERANCE, abs(total) * 0.001)
+
         if no_tax:
-            ok = abs(calculated - total) <= MATH_TOLERANCE
+            ok = abs(calculated - total) <= effective_tolerance
             tag = "PASS (0% tax)" if ok else "FAIL (no tax fields)"
             return ok, f"{tag} | base={base:.2f} total={total:.2f}"
 
         delta = abs(calculated - total)
-        if delta <= MATH_TOLERANCE:
-            return True, f"PASS | calculated={calculated:.2f} total={total:.2f} delta={delta:.4f}"
+        if delta <= effective_tolerance:
+            regime = normalised.get("tax_regime") or "UNKNOWN"
+            return True, f"PASS ({regime}) | calculated={calculated:.2f} total={total:.2f} delta={delta:.4f}"
         return False, f"FAIL | calculated={calculated:.2f} total={total:.2f} delta={delta:.4f}"
 
     @staticmethod
@@ -457,11 +463,20 @@ class DocumentMapper:
     ) -> ProcessingStatus:
         if not math_ok:
             return ProcessingStatus.REQUIRES_MANUAL_REVIEW
-        if overall_confidence <= CONFIDENCE_THRESHOLD:
+        if overall_confidence < CONFIDENCE_THRESHOLD:
             return ProcessingStatus.REQUIRES_MANUAL_REVIEW
         for f in REQUIRED_FIELDS:
             if normalised.get(f) is None:
                 return ProcessingStatus.REQUIRES_MANUAL_REVIEW
+        # FIX (vulnerability C): vendor_gstin is only mandatory for GST-regime
+        # invoices. Pre-2017 Excise invoices and international invoices have
+        # no GSTIN by definition, so requiring it unconditionally bottlenecked
+        # every non-GST document into manual review regardless of extraction
+        # quality.
+        if normalised.get("tax_regime") == "GST":
+            for f in REQUIRED_FIELDS_GST_ONLY:
+                if normalised.get(f) is None:
+                    return ProcessingStatus.REQUIRES_MANUAL_REVIEW
         return ProcessingStatus.READY_FOR_SAP
 
     # ------------------------------------------------------------------
@@ -487,10 +502,12 @@ class DocumentMapper:
             po_number=normalised.get("po_number"),
         )
         financial = FinancialData(
+            tax_regime=normalised.get("tax_regime"),
             base_amount=normalised.get("base_amount"),
             cgst_amount=normalised.get("cgst_amount"),
             sgst_amount=normalised.get("sgst_amount"),
             igst_amount=normalised.get("igst_amount"),
+            other_tax_amount=normalised.get("other_tax_amount"),
             total_invoice_amount=normalised.get("total_invoice_amount"),
             tax_code=normalised.get("tax_code"),
         )

@@ -63,7 +63,8 @@ SAP_CURRENCY: str = _get("SAP_CURRENCY", "INR")
 # Label sets shared between Piece 2 and Piece 3
 # ---------------------------------------------------------------------------
 FINANCIAL_LABELS: frozenset[str] = frozenset({
-    "base_amount", "cgst_amount", "sgst_amount", "igst_amount", "total_invoice_amount",
+    "tax_regime", "base_amount", "cgst_amount", "sgst_amount", "igst_amount",
+    "other_tax_amount", "total_invoice_amount",
 })
 
 HEADER_LABELS: frozenset[str] = frozenset({
@@ -75,4 +76,9 @@ LINE_ITEM_LABELS: frozenset[str] = frozenset({
     "item_description", "hsn_sac_code", "item_quantity", "item_unit_price", "item_line_amount",
 })
 
-REQUIRED_FIELDS: frozenset[str] = frozenset({"total_invoice_amount", "vendor_gstin"})
+# FIX (vulnerability C): vendor_gstin is only required when tax_regime == "GST".
+# Pre-2017 Excise invoices and international invoices legitimately have no
+# GSTIN at all — DocumentMapper._determine_status applies this conditionally
+# rather than as a blanket requirement (see mapper_parser.py).
+REQUIRED_FIELDS: frozenset[str] = frozenset({"total_invoice_amount"})
+REQUIRED_FIELDS_GST_ONLY: frozenset[str] = frozenset({"vendor_gstin"})

@@ -154,8 +154,10 @@ class TestProcessDocument:
         result = mapper.process_document([self._make_page("DOC-001", entities)])
         assert result["status"] == ProcessingStatus.READY_FOR_SAP.value
 
-    def test_requires_review_missing_gstin(self, mapper):
+    def test_requires_review_missing_gstin_when_gst_regime(self, mapper):
+        """vendor_gstin is required only when tax_regime is explicitly GST."""
         entities = [
+            {"label": "tax_regime",            "text": "GST",    "confidence": 0.95, "item_index": None},
             {"label": "total_invoice_amount", "text": "1180.0", "confidence": 0.95, "item_index": None},
             {"label": "base_amount",          "text": "1000.0", "confidence": 0.95, "item_index": None},
             {"label": "cgst_amount",          "text": "90.0",   "confidence": 0.95, "item_index": None},
@@ -163,6 +165,20 @@ class TestProcessDocument:
         ]
         result = mapper.process_document([self._make_page("DOC-002", entities)])
         assert result["status"] == ProcessingStatus.REQUIRES_MANUAL_REVIEW.value
+
+    def test_legacy_excise_invoice_ready_without_gstin(self, mapper):
+        """Pre-GST/Excise invoices have no GSTIN by definition and should
+        still reach READY_FOR_SAP via other_tax_amount, not be blocked."""
+        entities = [
+            {"label": "tax_regime",            "text": "EXCISE", "confidence": 0.95, "item_index": None},
+            {"label": "total_invoice_amount", "text": "1125.0", "confidence": 0.95, "item_index": None},
+            {"label": "base_amount",          "text": "1000.0", "confidence": 0.95, "item_index": None},
+            {"label": "other_tax_amount",     "text": "125.0",  "confidence": 0.95, "item_index": None},
+        ]
+        result = mapper.process_document([self._make_page("DOC-LEGACY-001", entities)])
+        assert result["status"] == ProcessingStatus.READY_FOR_SAP.value
+        assert result["financial_data"]["tax_regime"] == "EXCISE"
+        assert result["header_data"]["vendor_gstin"] is None
 
     def test_empty_entities_requires_review(self, mapper):
         result = mapper.process_document([self._make_page("DOC-003", [])])

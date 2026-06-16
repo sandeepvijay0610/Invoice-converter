@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+ENV PATH="//opt/venv/bin:$PATH"
 
 RUN useradd --create-home --shell /bin/bash appuser
 RUN mkdir -p /tmp/ingestor && chown appuser:appuser /tmp/ingestor
@@ -34,7 +34,10 @@ COPY --chown=appuser:appuser main.py ./
 
 USER appuser
 
+# FIX #15: Healthcheck now imports only lightweight config instead of the
+# full orchestrator (which would trigger InferenceWorker init and OpenAI
+# client construction on every health probe).
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "from pipeline.orchestrator import run_pipeline; print('OK')"
+    CMD python -c "from pipeline.config import MODEL_NAME; print('OK')"
 
 ENTRYPOINT ["python", "main.py"]
