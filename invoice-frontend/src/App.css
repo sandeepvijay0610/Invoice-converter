@@ -1,0 +1,11 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #ffffff; }
+
+.app { min-height: 100vh; }
+.navbar { background: #4b4bbd; color: white; padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; }
+.nav-brand { color: white; text-decoration: none; font-size: 1.3rem; font-weight: bold; }
+.nav-links { display: flex; gap: 1.5rem; align-items: center; }
+.nav-links a { color: #ccc; text-decoration: none; }
+.nav-links a:hover { color: white; }
+.upload-btn { background: #4CAF50; color: white !important; padding: 0.5rem 1rem; border-radius: 6px; }
+.main-content { max-width: 1200px; margin: 2rem auto; padding: 0 1rem; }
