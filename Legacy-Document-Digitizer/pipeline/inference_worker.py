@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import base64
 import logging
+import random
 import time
 from pathlib import Path
 from typing import Optional
 
-from openai import OpenAI
+from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI, RateLimitError
 from pydantic import BaseModel, Field
 
 from .config import (
@@ -31,6 +32,24 @@ from .config import (
 from .document_preprocessor import ProcessedPage
 
 logger = logging.getLogger(__name__)
+
+
+class RateLimitExceeded(Exception):
+    """
+    Raised when the model API rejects a request due to rate limiting and
+    all configured retries (SDK-level + our own backoff loop) are exhausted.
+
+    ANOMALY FIX: orchestrator.py imports this exact class from this module
+    (`from .inference_worker import InferenceWorker, RateLimitExceeded`),
+    but it didn't exist here — every worker container would fail at import
+    time with ImportError before processing a single message. This class
+    is intentionally distinct from generic extraction failures (corrupt
+    PDF, model returned malformed JSON) so the orchestrator can route it to
+    a RATE_LIMITED status instead of silently bucketing it with
+    REQUIRES_MANUAL_REVIEW — a rate-limited invoice has nothing wrong with
+    it and should be retried, not sent to a human.
+    """
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -150,10 +169,12 @@ class InferenceWorker:
         model: str = MODEL_NAME,
         max_retries: int = MAX_RETRIES,
         timeout: int = TIMEOUT_SECONDS,
+        max_backoff_attempts: int = 5,
     ) -> None:
         self._model = model
         self._delay = API_DELAY_SECONDS
         self._call_count = 0
+        self._max_backoff_attempts = max_backoff_attempts
 
         self._client = OpenAI(
             base_url=endpoint,
@@ -186,9 +207,19 @@ class InferenceWorker:
         -------
         dict
             ``{"doc_metadata": {...}, "extracted_entities": [...]}``.
-            On extraction failure returns the same shape with an empty
-            entity list rather than raising, so the pipeline can continue
-            and mark the document for manual review.
+            On a genuine extraction failure (corrupt page, model returned
+            malformed output) returns the same shape with an empty entity
+            list rather than raising, so the pipeline can continue and mark
+            the document for manual review.
+
+        Raises
+        ------
+        RateLimitExceeded
+            If the model API rate-limits us and every backoff attempt is
+            exhausted. This is deliberately NOT swallowed into an empty
+            result — the caller (orchestrator) routes this to a distinct
+            RATE_LIMITED status rather than REQUIRES_MANUAL_REVIEW, since
+            there's nothing wrong with the document itself.
         """
         if not pages:
             return self._empty_result("UNKNOWN", 1, "UNKNOWN", 0)
@@ -209,9 +240,9 @@ class InferenceWorker:
             image_b64_list = [self._encode_image(page.image_path) for page in pages]
 
             if total_pages == 1:
-                invoice = self._call_model_single(image_b64_list[0])
+                invoice = self._call_with_backoff(self._call_model_single, image_b64_list[0])
             else:
-                invoice = self._call_model_multi(image_b64_list)
+                invoice = self._call_with_backoff(self._call_model_multi, image_b64_list)
 
             entities = self._schema_to_entities(invoice)
             elapsed = time.perf_counter() - t0
@@ -231,6 +262,16 @@ class InferenceWorker:
                 "extracted_entities": entities,
             }
 
+        except RateLimitExceeded:
+            # Deliberately not caught by the broad except below — let it
+            # propagate so the orchestrator can set RATE_LIMITED instead of
+            # silently treating "the provider is overloaded" the same as
+            # "this document failed to parse."
+            logger.error(
+                "Rate limit exhausted | doc_id=%s pages=%d", doc_id, total_pages
+            )
+            raise
+
         except Exception as exc:
             logger.error(
                 "Extraction failed | doc_id=%s error=%s", doc_id, exc, exc_info=True
@@ -244,9 +285,58 @@ class InferenceWorker:
     # ------------------------------------------------------------------
 
     def _rate_limit(self) -> None:
+        """
+        Small fixed pacing delay between calls within this worker process.
+
+        Note: this only smooths bursts from a SINGLE worker. With multiple
+        ai-worker replicas (docker compose --scale ai-worker=N), each
+        process has its own independent counter and there is no
+        cross-process coordination — the real backstop against exceeding
+        the provider's quota when scaled out is _call_with_backoff below,
+        which retries on actual 429s with increasing delay rather than
+        guessing a safe pace up front.
+        """
         self._call_count += 1
         if self._call_count > 1:
             time.sleep(self._delay)
+
+    def _call_with_backoff(self, fn, *args, **kwargs):
+        """
+        Wraps a model call with exponential backoff + jitter, retried only
+        on transient/rate-limit errors. Raises RateLimitExceeded if every
+        attempt is exhausted, so the caller can distinguish "the provider
+        is overloaded, try again later" from "this document genuinely
+        failed to extract."
+
+        Backoff schedule: 2s, 4s, 8s, 16s... capped at 60s, each with up to
+        ±25% jitter so multiple worker replicas retrying simultaneously
+        don't re-collide on the same retry tick.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(self._max_backoff_attempts):
+            try:
+                return fn(*args, **kwargs)
+            except (RateLimitError, APITimeoutError, APIConnectionError) as exc:
+                last_exc = exc
+                if attempt == self._max_backoff_attempts - 1:
+                    break
+                base_delay = min(2 ** (attempt + 1), 60)
+                jitter = base_delay * random.uniform(-0.25, 0.25)
+                delay = max(0.5, base_delay + jitter)
+                logger.warning(
+                    "Transient API error (attempt %d/%d), backing off %.1fs: %s",
+                    attempt + 1, self._max_backoff_attempts, delay, exc,
+                )
+                time.sleep(delay)
+            except APIStatusError:
+                # Non-retryable API error (e.g. 400 bad request, 401 auth) —
+                # retrying won't help, fail fast instead of burning attempts.
+                raise
+
+        raise RateLimitExceeded(
+            f"Exhausted {self._max_backoff_attempts} attempts against rate limiting "
+            f"or transient errors: {last_exc}"
+        ) from last_exc
 
     # ------------------------------------------------------------------
     # Private — model calls

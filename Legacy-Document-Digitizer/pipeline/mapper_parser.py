@@ -88,6 +88,16 @@ _DATE_FORMATS = [
 class ProcessingStatus(str, Enum):
     READY_FOR_SAP = "READY_FOR_SAP"
     REQUIRES_MANUAL_REVIEW = "REQUIRES_MANUAL_REVIEW"
+    # ANOMALY FIX: orchestrator.py already references
+    # ProcessingStatus.RATE_LIMITED.value when InferenceWorker exhausts its
+    # retry/backoff attempts against a 429. That enum member didn't exist
+    # here, so the very first real rate-limit event would raise
+    # AttributeError mid-pipeline. Distinct from REQUIRES_MANUAL_REVIEW on
+    # purpose: a rate-limited invoice has nothing wrong with the document
+    # itself, it just needs to be retried once the provider's quota
+    # recovers — routing it to manual review would put it in front of a
+    # human for no reason.
+    RATE_LIMITED = "RATE_LIMITED"
 
 
 class SapMetadata(BaseModel):
