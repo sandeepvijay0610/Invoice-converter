@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any
 
@@ -27,9 +27,12 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from .config import (
     CONFIDENCE_THRESHOLD,
     FINANCIAL_LABELS,
+    GST_EFFECTIVE_DATE,
     HEADER_LABELS,
     LINE_ITEM_LABELS,
     MATH_TOLERANCE,
+    MAX_FUTURE_DAYS,
+    MIN_PLAUSIBLE_INVOICE_DATE,
     REQUIRED_FIELDS,
     REQUIRED_FIELDS_GST_ONLY,
     SAP_COMPANY_CODE,
@@ -64,7 +67,8 @@ _PO_RE = re.compile(
     r'(?:PO[/\-]?\s*(?:No\.?|Number|#)?\s*[:\-]?\s*)(\d{4,8})', re.IGNORECASE
 )
 _DATE_RE = re.compile(
-    r'(\d{2}[-/\.]\d{2}[-/\.]\d{2,4}'
+    r'(\d{4}-\d{2}-\d{2}'
+    r'|\d{2}[-/\.]\d{2}[-/\.]\d{2,4}'
     r'|\d{2}\s+[A-Za-z]+\s+\d{4}'
     r'|\d{2}-[A-Za-z]{3}-\d{4})',
     re.IGNORECASE,
@@ -390,6 +394,60 @@ class DocumentMapper:
         return None
 
     @staticmethod
+    def validate_date_plausibility(
+        iso_date: str | None,
+        tax_regime: str | None = None,
+    ) -> tuple[bool, str]:
+        """
+        Deterministic sanity check on a parsed ISO date, independent of
+        whatever confidence score the model attached to it.
+
+        This exists because a vision model can misread a single digit
+        (e.g. "2025" -> "2013") and still produce a perfectly well-formed
+        YYYY-MM-DD string — there's nothing syntactically wrong with
+        "2013-06-26", so the earlier strptime-based validator lets it
+        through every time. Math validation doesn't catch this either,
+        since arithmetic on amounts has nothing to do with the date field.
+        This is a separate, explicit check against real-world constraints:
+
+        1. The date must parse and fall within [MIN_PLAUSIBLE_INVOICE_DATE,
+           today + MAX_FUTURE_DAYS].
+        2. If tax_regime is "GST", the date must be on/after
+           GST_EFFECTIVE_DATE (2017-07-01) — GST did not exist before that,
+           so a GST-regime invoice with an earlier date is a deterministic
+           contradiction, not a judgment call.
+
+        Returns (is_plausible, reason) — reason is always populated for
+        logging, even when plausible.
+        """
+        if iso_date is None:
+            return False, "invoice_date is missing"
+
+        try:
+            parsed = datetime.strptime(iso_date, "%Y-%m-%d").date()
+        except ValueError:
+            return False, f"invoice_date '{iso_date}' is not valid ISO format"
+
+        min_date = datetime.strptime(MIN_PLAUSIBLE_INVOICE_DATE, "%Y-%m-%d").date()
+        if parsed < min_date:
+            return False, f"invoice_date {iso_date} predates plausible floor {MIN_PLAUSIBLE_INVOICE_DATE}"
+
+        max_date = (datetime.now() + timedelta(days=MAX_FUTURE_DAYS)).date()
+        if parsed > max_date:
+            return False, f"invoice_date {iso_date} is more than {MAX_FUTURE_DAYS} days in the future"
+
+        if tax_regime == "GST":
+            gst_start = datetime.strptime(GST_EFFECTIVE_DATE, "%Y-%m-%d").date()
+            if parsed < gst_start:
+                return False, (
+                    f"invoice_date {iso_date} predates GST effective date "
+                    f"{GST_EFFECTIVE_DATE} but tax_regime is GST — contradiction, "
+                    f"likely a misread year"
+                )
+
+        return True, f"invoice_date {iso_date} is plausible"
+
+    @staticmethod
     def parse_amount(raw: str) -> float | None:
         if not raw or not isinstance(raw, str):
             return None
@@ -487,6 +545,32 @@ class DocumentMapper:
             for f in REQUIRED_FIELDS_GST_ONLY:
                 if normalised.get(f) is None:
                     return ProcessingStatus.REQUIRES_MANUAL_REVIEW
+
+        # ANOMALY FIX: the model (observed with GPT-4o-mini, but not
+        # exclusive to it) can misread a year digit and produce a
+        # well-formed but factually wrong date — e.g. "2013-06-26" on an
+        # invoice referencing a 2025-era Amazon order ID, with tax_regime
+        # GST despite GST not existing in 2013. Neither the math check nor
+        # the confidence score catches this, since both are about
+        # arithmetic/extraction-quality, not real-world date plausibility.
+        # This is a deterministic, code-enforced cross-check rather than
+        # something left to the model's own self-reported confidence.
+        #
+        # Deliberately scoped to "date is PRESENT but implausible", not
+        # "date is missing" — invoice_date isn't in REQUIRED_FIELDS, so a
+        # missing date is a separate, pre-existing policy decision this fix
+        # doesn't change. This check only catches a date that IS there and
+        # is wrong, which is the actual failure mode observed in production.
+        invoice_date = normalised.get("invoice_date")
+        if invoice_date is not None:
+            date_ok, date_reason = DocumentMapper.validate_date_plausibility(
+                invoice_date,
+                tax_regime=normalised.get("tax_regime"),
+            )
+            if not date_ok:
+                logger.warning("Date implausibility check failed: %s", date_reason)
+                return ProcessingStatus.REQUIRES_MANUAL_REVIEW
+
         return ProcessingStatus.READY_FOR_SAP
 
     # ------------------------------------------------------------------

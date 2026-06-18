@@ -57,6 +57,7 @@ services:
       context: ../invoice-api
       dockerfile: Dockerfile
     container_name: sap-invoice-api
+    restart: unless-stopped
     ports:
       - "8081:8080"
     environment:
@@ -96,6 +97,17 @@ services:
       context: .
       dockerfile: Dockerfile
     image: sap-invoice-pipeline
+    # ANOMALY FIX: this service had no restart policy at all. When main.py
+    # crashed on an unguarded RabbitMQ connection failure (see main.py's
+    # _connect_rabbitmq backoff fix), the container exited and stayed dead
+    # — Docker never tried to bring it back. "unless-stopped" means Docker
+    # will restart it automatically on any crash, while still respecting an
+    # explicit `docker compose stop`. This is a backstop on top of the
+    # in-process retry/reconnect logic, not a replacement for it — the
+    # retry loop handles transient broker unavailability gracefully without
+    # ever needing the container to restart; this policy only kicks in if
+    # the process exits for some other unexpected reason.
+    restart: unless-stopped
     environment:
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - MODEL_NAME=gpt-4o

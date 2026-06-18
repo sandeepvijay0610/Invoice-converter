@@ -60,6 +60,32 @@ SAP_DOC_TYPE: str = _get("SAP_DOC_TYPE", "RE")
 SAP_CURRENCY: str = _get("SAP_CURRENCY", "INR")
 
 # ---------------------------------------------------------------------------
+# Date plausibility bounds
+# ---------------------------------------------------------------------------
+# ANOMALY FIX: the date parser previously accepted any syntactically valid
+# date with zero real-world plausibility check. A vision model misreading a
+# year digit (e.g. "2025" -> "2013") produced a perfectly well-formed
+# YYYY-MM-DD string that sailed straight through to READY_FOR_SAP — the
+# math validation only checks arithmetic, never date sanity. GPT-4o-mini in
+# particular was observed doing this consistently on real invoices.
+#
+# GST_EFFECTIVE_DATE: India's GST regime took legal effect on 2017-07-01.
+# Any invoice claiming tax_regime="GST" dated before this is definitionally
+# impossible — GST didn't exist yet. This is a hard, deterministic fact, not
+# a model judgment call, so it's enforced in code rather than left to the AI.
+GST_EFFECTIVE_DATE: str = "2017-07-01"
+
+# MIN_PLAUSIBLE_INVOICE_DATE: a generous floor for ANY invoice regardless of
+# regime, to catch wildly wrong OCR/vision misreads (e.g. a 1900s date from
+# a garbled year). Not regime-specific, just a sanity floor.
+MIN_PLAUSIBLE_INVOICE_DATE: str = "1990-01-01"
+
+# MAX_FUTURE_DAYS: invoices dated more than this many days in the future are
+# almost certainly a misread (e.g. month/day swapped, or a digit transposed)
+# rather than a real future-dated document.
+MAX_FUTURE_DAYS: int = 30
+
+# ---------------------------------------------------------------------------
 # Label sets shared between Piece 2 and Piece 3
 # ---------------------------------------------------------------------------
 FINANCIAL_LABELS: frozenset[str] = frozenset({

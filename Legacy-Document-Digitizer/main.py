@@ -194,13 +194,22 @@ def process_message(ch, method, properties, body) -> None:
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
 
-def main() -> None:
-    configure_logging()
+def _connect_rabbitmq(max_attempts: int = 10) -> pika.BlockingConnection:
+    """
+    Connect to RabbitMQ with exponential backoff.
 
-    logger.info("AI Worker booting. Connecting to RabbitMQ at %s...", RABBITMQ_HOST)
+    ANOMALY FIX: previously this was a single unguarded
+    pika.BlockingConnection() call. If RabbitMQ wasn't reachable on the
+    first attempt (e.g. Docker restarted and rabbitmq took longer to become
+    healthy than expected, despite depends_on: condition: service_healthy
+    in compose), the AMQPConnectionError propagated straight out of main()
+    and the worker process exited with code 1 — permanently, since there is
+    no restart policy on the ai-worker service. The container then sat dead
+    until someone noticed and ran `docker compose up -d` manually, during
+    which time every message sent to the queue just piled up unconsumed.
 
-    time.sleep(5)
-
+    Backoff schedule: 2s, 4s, 8s, 16s... capped at 30s.
+    """
     credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASS)
     parameters = pika.ConnectionParameters(
         host=RABBITMQ_HOST,
@@ -209,22 +218,75 @@ def main() -> None:
         blocked_connection_timeout=300,
     )
 
-    connection = pika.BlockingConnection(parameters)
-    channel = connection.channel()
+    last_exc: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            connection = pika.BlockingConnection(parameters)
+            logger.info("Connected to RabbitMQ on attempt %d/%d", attempt, max_attempts)
+            return connection
+        except Exception as exc:
+            last_exc = exc
+            if attempt == max_attempts:
+                break
+            delay = min(2 ** attempt, 30)
+            logger.warning(
+                "RabbitMQ connection failed (attempt %d/%d), retrying in %ds: %s",
+                attempt, max_attempts, delay, exc,
+            )
+            time.sleep(delay)
 
-    channel.queue_declare(queue=QUEUE_NAME, durable=True)
-    channel.basic_qos(prefetch_count=1)
-    channel.basic_consume(queue=QUEUE_NAME, on_message_callback=process_message)
+    logger.error("Could not connect to RabbitMQ after %d attempts.", max_attempts)
+    raise last_exc
 
-    logger.info("Worker listening on '%s'. Waiting for invoices...", QUEUE_NAME)
 
-    try:
-        channel.start_consuming()
-    except KeyboardInterrupt:
-        logger.info("Worker shutting down...")
-        channel.stop_consuming()
-    finally:
-        connection.close()
+def main() -> None:
+    configure_logging()
+
+    logger.info("AI Worker booting. Connecting to RabbitMQ at %s...", RABBITMQ_HOST)
+
+    # ANOMALY FIX: this used to be an unconditional 5-second sleep before
+    # the (single, unguarded) connection attempt — a guess at how long
+    # RabbitMQ takes to start, not an actual readiness check. The retry
+    # loop in _connect_rabbitmq replaces this guess with real backoff that
+    # keeps trying until RabbitMQ is actually reachable (or we genuinely
+    # give up after max_attempts), so a slow-starting broker no longer
+    # kills the worker outright.
+
+    # ANOMALY FIX: wrap the whole consume loop so a connection that drops
+    # mid-run (network blip, RabbitMQ restart, etc.) triggers a reconnect
+    # instead of killing the process the same way the original startup
+    # failure did.
+    while True:
+        try:
+            connection = _connect_rabbitmq()
+            channel = connection.channel()
+
+            channel.queue_declare(queue=QUEUE_NAME, durable=True)
+            channel.basic_qos(prefetch_count=1)
+            channel.basic_consume(queue=QUEUE_NAME, on_message_callback=process_message)
+
+            logger.info("Worker listening on '%s'. Waiting for invoices...", QUEUE_NAME)
+
+            try:
+                channel.start_consuming()
+            except KeyboardInterrupt:
+                logger.info("Worker shutting down...")
+                channel.stop_consuming()
+                connection.close()
+                return
+            finally:
+                if connection.is_open:
+                    connection.close()
+
+        except KeyboardInterrupt:
+            logger.info("Worker shutting down (interrupted before connecting)...")
+            return
+        except Exception as exc:
+            logger.error(
+                "Worker loop crashed, reconnecting in 5s: %s", exc, exc_info=True
+            )
+            time.sleep(5)
+            continue
 
 
 if __name__ == "__main__":
