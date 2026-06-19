@@ -32,9 +32,13 @@ export default function UploadPage() {
 
       setState('done');
       setTimeout(() => navigate(`/invoice/${id}`), 1500);
-    } catch {
+    } catch (err) {
       setState('error');
-      setProgress('Upload failed. Please try again.');
+      const message =
+        (err as any)?.response?.data?.error ||
+        (err as any)?.response?.data?.message ||
+        'Upload failed. Please try again.';
+      setProgress(message);
     }
   }, [navigate]);
 

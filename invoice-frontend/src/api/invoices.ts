@@ -6,12 +6,11 @@ export const invoiceApi = {
     apiClient.post<UploadResponse>('/invoices/request-upload', { filename }).then(r => r.data),
 
   uploadFile: (uploadUrl: string, file: File) =>
-  fetch(uploadUrl, { 
-    method: 'PUT', 
-    body: file, 
-    mode: 'no-cors',
-    headers: { 'x-ms-blob-type': 'BlockBlob' } 
-  }),
+    fetch(uploadUrl, { 
+      method: 'PUT', 
+      body: file, 
+      headers: { 'x-ms-blob-type': 'BlockBlob' } 
+    }),
 
   process: (id: string) =>
     apiClient.post(`/invoices/${id}/process`),

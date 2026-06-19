@@ -68,3 +68,12 @@ export interface StatsResponse {
   needsReview: number;
   failed: number;
 }
+export interface InvoiceSummary {
+  id: string;
+  status: 'PENDING' | 'PROCESSING' | 'READY_FOR_SAP' | 'REQUIRES_MANUAL_REVIEW' | 'FAILED' | 'RATE_LIMITED';
+  vendorName: string | null;
+  invoiceNumber: string | null;
+  totalAmount: number | null;
+  companyCode: string | null;
+  createdAt: string;
+}

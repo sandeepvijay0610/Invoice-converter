@@ -34,6 +34,9 @@ public class Invoice {
     @Column(name = "vendor_name")
     private String vendorName;
 
+    @Column(name = "invoice_number")
+    private String invoiceNumber;
+
     @Column(name = "total_amount")
     private BigDecimal totalAmount;
 

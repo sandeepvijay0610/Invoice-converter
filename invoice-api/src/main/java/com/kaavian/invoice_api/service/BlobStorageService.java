@@ -95,4 +95,22 @@ public class BlobStorageService {
         // blobName is just "invoices/<uuid>-clean.pdf" — no host, no token, no expiry.
         return new UploadTarget(uploadUrl, uniqueFilename);
     }
+
+    /**
+     * Checks whether a blob actually landed in storage.
+     *
+     * FIX: the browser's PUT to Azurite is made with fetch's `no-cors` mode
+     * (Azurite has no CORS rules configured by default, so a normal
+     * cross-origin fetch would be blocked entirely). That makes the
+     * response "opaque" client-side — the frontend literally cannot tell a
+     * 200 from a 403/404 on that request, so a failed or incomplete upload
+     * was silently treated as a success and queued for processing anyway,
+     * only surfacing much later as a CorruptFileError in the worker logs.
+     * The Java backend has no such CORS restriction (server-to-server), so
+     * it can check directly — this is the real verification point.
+     */
+    public boolean blobExists(String blobName) {
+        BlobContainerClient containerClient = blobServiceClient.getBlobContainerClient(containerName);
+        return containerClient.getBlobClient(blobName).exists();
+    }
 }

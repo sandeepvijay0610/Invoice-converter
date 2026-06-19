@@ -63,10 +63,21 @@ public class InvoiceController {
 
     // 2. Endpoint: Trigger the AI processing after the frontend finishes uploading
     @PostMapping("/{id}/process")
-    public ResponseEntity<String> triggerProcessing(@PathVariable String id) {
+    public ResponseEntity<?> triggerProcessing(@PathVariable String id) {
         Invoice invoice = repository.findByDocId(id);
         if (invoice == null) {
             return ResponseEntity.notFound().build();
+        }
+
+        // FIX: the browser's upload PUT is sent with mode:'no-cors' (see
+        // BlobStorageService.blobExists' javadoc), so a failed upload never
+        // throws on the frontend and this endpoint used to get called
+        // regardless. Verify the blob actually landed before queueing —
+        // this is the first point in the flow that can reliably tell.
+        if (!storageService.blobExists(invoice.getFilePath())) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", "Upload not found in storage — the file may not have finished uploading. Please try uploading again."
+            ));
         }
 
         // invoice.getFilePath() is now just the blob name (e.g.
@@ -77,7 +88,7 @@ public class InvoiceController {
         invoice.setStatus("PROCESSING");
         repository.save(invoice);
 
-        return ResponseEntity.ok("Processing started for " + id);
+        return ResponseEntity.ok(Map.of("message", "Processing started for " + id));
     }
 
     // 3. Endpoint: List invoices for the dashboard, with optional status
@@ -169,6 +180,7 @@ public class InvoiceController {
         dto.put("id", invoice.getDocId());
         dto.put("status", invoice.getStatus());
         dto.put("vendorName", invoice.getVendorName());
+        dto.put("invoiceNumber", invoice.getInvoiceNumber());
         dto.put("totalAmount", invoice.getTotalAmount());
         dto.put("companyCode", invoice.getCompanyCode());
         dto.put("createdAt", invoice.getCreatedAt());
@@ -186,6 +198,7 @@ public class InvoiceController {
         dto.put("status", invoice.getStatus());
         dto.put("filePath", invoice.getFilePath());
         dto.put("vendorName", invoice.getVendorName());
+        dto.put("invoiceNumber", invoice.getInvoiceNumber());
         dto.put("totalAmount", invoice.getTotalAmount());
         dto.put("companyCode", invoice.getCompanyCode());
         dto.put("createdAt", invoice.getCreatedAt());

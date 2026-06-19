@@ -54,7 +54,7 @@ export default function DashboardPage() {
             <table className="w-full">
               <thead>
                 <tr className="border-b border-gray-200 bg-gray-50">
-                  <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Invoice ID</th>
+                  <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Invoice Number</th>
                   <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Vendor</th>
                   <th className="text-right px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Amount</th>
                   <th className="text-center px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
@@ -66,7 +66,7 @@ export default function DashboardPage() {
                   <tr key={inv.id} className="hover:bg-gray-50 transition-colors">
                     <td className="px-6 py-4">
                       <Link to={`/invoice/${inv.id}`} className="text-indigo-600 hover:text-indigo-800 font-mono text-sm">
-                        {inv.id}
+                        {inv.invoiceNumber || inv.id}
                       </Link>
                     </td>
                     <td className="px-6 py-4 text-sm text-gray-700">{inv.vendorName || '—'}</td>

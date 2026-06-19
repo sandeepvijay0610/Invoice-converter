@@ -4,7 +4,7 @@ import clsx from 'clsx';
 
 const NAV_ITEMS = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/upload', icon: Upload, label: 'Upload' },
+  { to: '/batch-upload', icon: Upload, label: 'Batch Upload' },
 ];
 
 export function AppLayout({ children }: { children: React.ReactNode }) {

@@ -4,6 +4,8 @@ import { AppLayout } from './components/layout/AppLayout';
 import DashboardPage from './pages/DashboardPage';
 import UploadPage from './pages/UploadPage';
 import InvoiceDetailPage from './pages/InvoiceDetailPage';
+import BatchUpload from './components/upload/BatchUpload';
+
 
 export default function App() {
   return (
@@ -12,7 +14,7 @@ export default function App() {
       <AppLayout>
         <Routes>
           <Route path="/" element={<DashboardPage />} />
-          <Route path="/upload" element={<UploadPage />} />
+          <Route path="/batch-upload" element={<BatchUpload />} />
           <Route path="/invoice/:id" element={<InvoiceDetailPage />} />
         </Routes>
       </AppLayout>
