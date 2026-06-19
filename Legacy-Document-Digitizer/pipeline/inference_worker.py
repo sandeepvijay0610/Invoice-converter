@@ -2,7 +2,7 @@
 inference_worker.py
 ===================
 Piece 2 — AI Worker Node: Multimodal invoice extraction via GitHub Models
-(GPT-4o / GPT-4o-mini).
+(GPT-4o / GPT-4o-mini) or local Ollama models (Phi-3.5-Vision, Llama 3.2-Vision).
 
 Supports single-page and multi-page documents. All pages are sent to the
 model in a single API call and the result is returned as a flat entity list
@@ -12,12 +12,14 @@ compatible with the Mapper/Parser (Piece 3).
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import random
 import time
 from pathlib import Path
 from typing import Optional
 
+import requests
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI, RateLimitError
 from pydantic import BaseModel, Field
 
@@ -27,6 +29,9 @@ from .config import (
     GITHUB_TOKEN,
     MAX_RETRIES,
     MODEL_NAME,
+    MODEL_PROVIDER,        # "github" or "ollama"
+    OLLAMA_BASE_URL,        # "http://localhost:11434/v1"
+    OLLAMA_MODEL_NAME,       # "phi3.5:vision" or "llama3.2-vision:11b"
     TIMEOUT_SECONDS,
 )
 from .document_preprocessor import ProcessedPage
@@ -146,18 +151,20 @@ _MULTI_PAGE_SYSTEM_PROMPT = (
 
 class InferenceWorker:
     """
-    Piece 2: GitHub Models GPT-4o/Mini multimodal invoice extraction.
+    Piece 2: Multimodal invoice extraction via GitHub Models or local Ollama.
 
     Parameters
     ----------
     endpoint : str
-        Azure inference endpoint URL.
+        Azure inference endpoint URL (GitHub) or Ollama base URL.
     api_key : str
-        GitHub Models PAT.
+        GitHub Models PAT (ignored for Ollama).
     model : str
-        Model name (gpt-4o or gpt-4o-mini).
+        Model name (gpt-4o, gpt-4o-mini, or Ollama model name).
+    provider : str
+        "github" or "ollama".
     max_retries : int
-        Number of retries the OpenAI client will attempt.
+        Number of retries the client will attempt.
     timeout : int
         Request timeout in seconds.
     """
@@ -167,67 +174,44 @@ class InferenceWorker:
         endpoint: str = GITHUB_ENDPOINT,
         api_key: str = GITHUB_TOKEN,
         model: str = MODEL_NAME,
+        provider: str = MODEL_PROVIDER,
         max_retries: int = MAX_RETRIES,
         timeout: int = TIMEOUT_SECONDS,
         max_backoff_attempts: int = 5,
     ) -> None:
         self._model = model
+        self._provider = provider
         self._delay = API_DELAY_SECONDS
         self._call_count = 0
         self._max_backoff_attempts = max_backoff_attempts
 
-        self._client = OpenAI(
-            base_url=endpoint,
-            api_key=api_key,
-            max_retries=max_retries,
-            timeout=timeout,
-        )
+        if provider == "ollama":
+            self._ollama_url = endpoint or OLLAMA_BASE_URL
+            self._client = None  # Ollama uses raw HTTP, not OpenAI client
+        else:
+            self._client = OpenAI(
+                base_url=endpoint,
+                api_key=api_key,
+                max_retries=max_retries,
+                timeout=timeout,
+            )
 
-        logger.info("InferenceWorker ready | model=%s", model)
+        logger.info("InferenceWorker ready | provider=%s model=%s", provider, model)
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def process_document(self, pages: list[ProcessedPage]) -> dict:
-        """
-        Extract invoice data from one or more pages.
-
-        Sends all pages to the model in a single API call.
-        Returns a dict with ``doc_metadata`` and ``extracted_entities``
-        compatible with DocumentMapper.process_document().
-
-        Parameters
-        ----------
-        pages : list[ProcessedPage]
-            Sorted list of pages from DocumentPreprocessor.process().
-            Must all share the same doc_id in their metadata.
-
-        Returns
-        -------
-        dict
-            ``{"doc_metadata": {...}, "extracted_entities": [...]}``.
-            On a genuine extraction failure (corrupt page, model returned
-            malformed output) returns the same shape with an empty entity
-            list rather than raising, so the pipeline can continue and mark
-            the document for manual review.
-
-        Raises
-        ------
-        RateLimitExceeded
-            If the model API rate-limits us and every backoff attempt is
-            exhausted. This is deliberately NOT swallowed into an empty
-            result — the caller (orchestrator) routes this to a distinct
-            RATE_LIMITED status rather than REQUIRES_MANUAL_REVIEW, since
-            there's nothing wrong with the document itself.
-        """
+        """Extract invoice data from one or more pages."""
         if not pages:
             return self._empty_result("UNKNOWN", 1, "UNKNOWN", 0)
 
         doc_id = str(pages[0].metadata.get("doc_id", "UNKNOWN"))
         total_pages = len(pages)
 
-        logger.info("Extracting | doc_id=%s pages=%d model=%s", doc_id, total_pages, self._model)
+        logger.info("Extracting | doc_id=%s pages=%d model=%s provider=%s",
+                     doc_id, total_pages, self._model, self._provider)
 
         for page in pages:
             if not Path(page.image_path).exists():
@@ -239,10 +223,16 @@ class InferenceWorker:
         try:
             image_b64_list = [self._encode_image(page.image_path) for page in pages]
 
-            if total_pages == 1:
-                invoice = self._call_with_backoff(self._call_model_single, image_b64_list[0])
+            if self._provider == "ollama":
+                if total_pages == 1:
+                    invoice = self._call_with_backoff(self._call_ollama_single, image_b64_list[0])
+                else:
+                    invoice = self._call_with_backoff(self._call_ollama_multi, image_b64_list)
             else:
-                invoice = self._call_with_backoff(self._call_model_multi, image_b64_list)
+                if total_pages == 1:
+                    invoice = self._call_with_backoff(self._call_model_single, image_b64_list[0])
+                else:
+                    invoice = self._call_with_backoff(self._call_model_multi, image_b64_list)
 
             entities = self._schema_to_entities(invoice)
             elapsed = time.perf_counter() - t0
@@ -263,19 +253,11 @@ class InferenceWorker:
             }
 
         except RateLimitExceeded:
-            # Deliberately not caught by the broad except below — let it
-            # propagate so the orchestrator can set RATE_LIMITED instead of
-            # silently treating "the provider is overloaded" the same as
-            # "this document failed to parse."
-            logger.error(
-                "Rate limit exhausted | doc_id=%s pages=%d", doc_id, total_pages
-            )
+            logger.error("Rate limit exhausted | doc_id=%s pages=%d", doc_id, total_pages)
             raise
 
         except Exception as exc:
-            logger.error(
-                "Extraction failed | doc_id=%s error=%s", doc_id, exc, exc_info=True
-            )
+            logger.error("Extraction failed | doc_id=%s error=%s", doc_id, exc, exc_info=True)
             return self._empty_result(
                 doc_id, pages[0].page_number, pages[0].source_type.name, total_pages
             )
@@ -285,33 +267,13 @@ class InferenceWorker:
     # ------------------------------------------------------------------
 
     def _rate_limit(self) -> None:
-        """
-        Small fixed pacing delay between calls within this worker process.
-
-        Note: this only smooths bursts from a SINGLE worker. With multiple
-        ai-worker replicas (docker compose --scale ai-worker=N), each
-        process has its own independent counter and there is no
-        cross-process coordination — the real backstop against exceeding
-        the provider's quota when scaled out is _call_with_backoff below,
-        which retries on actual 429s with increasing delay rather than
-        guessing a safe pace up front.
-        """
+        """Small fixed pacing delay between calls within this worker process."""
         self._call_count += 1
         if self._call_count > 1:
             time.sleep(self._delay)
 
     def _call_with_backoff(self, fn, *args, **kwargs):
-        """
-        Wraps a model call with exponential backoff + jitter, retried only
-        on transient/rate-limit errors. Raises RateLimitExceeded if every
-        attempt is exhausted, so the caller can distinguish "the provider
-        is overloaded, try again later" from "this document genuinely
-        failed to extract."
-
-        Backoff schedule: 2s, 4s, 8s, 16s... capped at 60s, each with up to
-        ±25% jitter so multiple worker replicas retrying simultaneously
-        don't re-collide on the same retry tick.
-        """
+        """Exponential backoff + jitter for transient/rate-limit errors."""
         last_exc: Exception | None = None
         for attempt in range(self._max_backoff_attempts):
             try:
@@ -329,8 +291,6 @@ class InferenceWorker:
                 )
                 time.sleep(delay)
             except APIStatusError:
-                # Non-retryable API error (e.g. 400 bad request, 401 auth) —
-                # retrying won't help, fail fast instead of burning attempts.
                 raise
 
         raise RateLimitExceeded(
@@ -339,8 +299,9 @@ class InferenceWorker:
         ) from last_exc
 
     # ------------------------------------------------------------------
-    # Private — model calls
+    # Private — GitHub Models API calls
     # ------------------------------------------------------------------
+
     @staticmethod
     def _encode_image(image_path: str) -> str:
         """Read an image file and encode it as base64 data URL."""
@@ -411,25 +372,87 @@ class InferenceWorker:
         return invoice
 
     # ------------------------------------------------------------------
+    # Private — Ollama API calls (local model, no rate limits, no auth)
+    # ------------------------------------------------------------------
+
+    def _call_ollama_single(self, image_b64: str) -> _InvoiceSchema:
+        """Call local Ollama model with a single page image."""
+        return self._call_ollama(image_b64, _SINGLE_PAGE_SYSTEM_PROMPT)
+
+    def _call_ollama_multi(self, image_b64_list: list[str]) -> _InvoiceSchema:
+        """Call local Ollama model with multiple page images."""
+        return self._call_ollama(image_b64_list, _MULTI_PAGE_SYSTEM_PROMPT)
+
+    def _call_ollama(self, images, system_prompt: str) -> _InvoiceSchema:
+        """
+        Generic Ollama chat completions call.
+
+        Ollama's API is OpenAI-compatible at /v1/chat/completions.
+        We use requests directly (no SDK needed) with the schema passed
+        as JSON in the prompt since Ollama doesn't support response_format.
+        """
+        schema_json = json.dumps(_InvoiceSchema.model_json_schema(), indent=2)
+
+        user_content: list[dict] = [
+            {
+                "type": "text",
+                "text": (
+                    "Extract the invoice data from the image(s) into this exact JSON schema:\n"
+                    f"```json\n{schema_json}\n```\n"
+                    "Return ONLY valid JSON matching this schema. No other text."
+                ),
+            }
+        ]
+
+        # Handle single image (str) or multiple images (list)
+        image_list = images if isinstance(images, list) else [images]
+        for b64 in image_list:
+            user_content.append({
+                "type": "image_url",
+                "image_url": {"url": b64, "detail": "high"},
+            })
+
+        payload = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            "temperature": 0.0,
+            "max_tokens": 4096,
+            "stream": False,
+        }
+
+        response = requests.post(
+            f"{self._ollama_url}/chat/completions",
+            json=payload,
+            timeout=TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+
+        body = response.json()
+        raw_text = body["choices"][0]["message"]["content"]
+
+        # Strip markdown code fences if present
+        if raw_text.startswith("```"):
+            raw_text = raw_text.split("```json", 1)[-1]
+            raw_text = raw_text.split("```", 1)[0]
+
+        invoice = _InvoiceSchema.model_validate_json(raw_text.strip())
+        return invoice
+
+    # ------------------------------------------------------------------
     # Private — schema → entity list
     # ------------------------------------------------------------------
 
     def _schema_to_entities(self, invoice: _InvoiceSchema) -> list[dict]:
-        """
-        Flatten the structured Pydantic schema into the entity list format
-        expected by DocumentMapper (Piece 3).
-
-        Date validation: if the model returns a date outside the plausible
-        range (2020–2030), we log a warning and keep the value so the mapper
-        can flag it for manual review rather than silently discarding data.
-        """
+        """Flatten the structured Pydantic schema into entity list format."""
         from datetime import datetime
 
         entities: list[dict] = []
         hd = invoice.header_data
         fd = invoice.financial_data
 
-        # Validate date — warn but don't silently correct or discard
         invoice_date = hd.invoice_date
         if invoice_date:
             try:

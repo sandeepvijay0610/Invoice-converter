@@ -32,6 +32,9 @@ GITHUB_ENDPOINT: str = _get("GITHUB_ENDPOINT", "https://models.inference.ai.azur
 API_DELAY_SECONDS: int = int(_get("API_DELAY_SECONDS", "4"))
 MAX_RETRIES: int = int(_get("MAX_RETRIES", "3"))
 TIMEOUT_SECONDS: int = int(_get("TIMEOUT_SECONDS", "120"))
+MODEL_PROVIDER = os.getenv("MODEL_PROVIDER", "github")  # "github" or "ollama"
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+OLLAMA_MODEL_NAME = os.getenv("OLLAMA_MODEL_NAME", "phi3.5:vision")
 
 # ---------------------------------------------------------------------------
 # Ingestor (Piece 1)

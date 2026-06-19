@@ -75,17 +75,48 @@ def _get_blob_client() -> BlobServiceClient:
     return _blob_service_client
 
 
+def _extract_summary_fields(payload: dict) -> dict:
+    """Pull dashboard summary columns from the nested extraction payload."""
+    header = payload.get("header_data") or {}
+    financial = payload.get("financial_data") or {}
+    sap_metadata = payload.get("sap_metadata") or {}
+    return {
+        "vendor_name": header.get("vendor_name"),
+        "invoice_number": header.get("invoice_number"),
+        "total_amount": financial.get("total_invoice_amount"),
+        "company_code": sap_metadata.get("company_code"),
+    }
+
+
 def update_invoice_status(doc_id: str, status: str, payload: dict = None) -> None:
-    """Update invoice status and extracted payload in PostgreSQL."""
+    """Update invoice status, extracted payload, and dashboard summary columns."""
     pool = _get_pool()
     conn = pool.getconn()
     try:
         cursor = conn.cursor()
         if payload:
             payload_json = json.dumps(payload)
+            summary = _extract_summary_fields(payload)
             cursor.execute(
-                "UPDATE invoices SET status = %s, extracted_payload = %s WHERE doc_id = %s",
-                (status, payload_json, doc_id)
+                """
+                UPDATE invoices
+                SET status = %s,
+                    extracted_payload = %s,
+                    vendor_name = %s,
+                    invoice_number = %s,
+                    total_amount = %s,
+                    company_code = %s
+                WHERE doc_id = %s
+                """,
+                (
+                    status,
+                    payload_json,
+                    summary["vendor_name"],
+                    summary["invoice_number"],
+                    summary["total_amount"],
+                    summary["company_code"],
+                    doc_id,
+                ),
             )
         else:
             cursor.execute(
