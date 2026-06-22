@@ -2,7 +2,8 @@ import { useInvoices } from '../hooks/useInvoices';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { LoadingSpinner } from '../components/ui/LoadingSpinner';
 import { Link } from 'react-router-dom';
-import { ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react';
+import { ChevronLeft, ChevronRight, RefreshCw, Trash2 } from 'lucide-react';
+import { invoiceApi } from '../api/invoices';
 
 const STATUS_OPTIONS = [
   { value: '', label: 'All Status' },
@@ -15,6 +16,16 @@ const STATUS_OPTIONS = [
 
 export default function DashboardPage() {
   const { invoices, loading, page, totalPages, statusFilter, setPage, setStatusFilter, refresh } = useInvoices();
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Delete this invoice permanently?')) return;
+    try {
+      await invoiceApi.delete(id);
+      refresh();
+    } catch (err) {
+      console.error('Delete failed:', err);
+    }
+  };
 
   return (
     <div>
@@ -44,7 +55,7 @@ export default function DashboardPage() {
       ) : invoices.length === 0 ? (
         <div className="text-center py-16">
           <p className="text-gray-500 text-lg">No invoices found</p>
-          <Link to="/upload" className="inline-block mt-4 text-indigo-600 hover:text-indigo-700 font-medium">
+          <Link to="/batch-upload" className="inline-block mt-4 text-indigo-600 hover:text-indigo-700 font-medium">
             Upload your first invoice →
           </Link>
         </div>
@@ -59,6 +70,7 @@ export default function DashboardPage() {
                   <th className="text-right px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Amount</th>
                   <th className="text-center px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
                   <th className="text-right px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Date</th>
+                  <th className="text-center px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -78,6 +90,15 @@ export default function DashboardPage() {
                     </td>
                     <td className="px-6 py-4 text-sm text-gray-500 text-right">
                       {new Date(inv.createdAt).toLocaleDateString('en-IN')}
+                    </td>
+                    <td className="px-6 py-4 text-center">
+                      <button
+                        onClick={(e) => { e.preventDefault(); handleDelete(inv.id); }}
+                        className="text-gray-400 hover:text-red-600 transition-colors"
+                        title="Delete invoice"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     </td>
                   </tr>
                 ))}

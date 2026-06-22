@@ -8,3 +8,4 @@ Pillow
 pymupdf
 pdf2image
 azure-storage-blob
+google-generativeai

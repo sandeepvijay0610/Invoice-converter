@@ -12,6 +12,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.RequestMethod;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -20,7 +21,7 @@ import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/invoices")
-@CrossOrigin(origins = "http://localhost:5173")
+@CrossOrigin(origins = "http://localhost:5173", methods = {RequestMethod.GET, RequestMethod.POST, RequestMethod.PUT, RequestMethod.DELETE, RequestMethod.OPTIONS})
 public class InvoiceController {
 
     private final InvoiceRepository repository;
@@ -218,5 +219,26 @@ public class InvoiceController {
         dto.put("extractedPayload", parsedPayload);
 
         return dto;
+    }
+    // 6. Endpoint: Delete an invoice and its associated blob from storage.
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Map<String, String>> deleteInvoice(@PathVariable String id) {
+        Invoice invoice = repository.findByDocId(id);
+        if (invoice == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        // Delete the blob from Azurite first
+        if (invoice.getFilePath() != null && !invoice.getFilePath().isBlank()) {
+            storageService.deleteBlob(invoice.getFilePath());
+        }
+
+        // Delete from database
+        repository.delete(invoice);
+
+        return ResponseEntity.ok(Map.of(
+            "id", id,
+            "message", "Invoice deleted successfully"
+        ));
     }
 }

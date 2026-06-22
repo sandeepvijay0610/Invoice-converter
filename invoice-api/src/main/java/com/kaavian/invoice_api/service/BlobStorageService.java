@@ -113,4 +113,14 @@ public class BlobStorageService {
         BlobContainerClient containerClient = blobServiceClient.getBlobContainerClient(containerName);
         return containerClient.getBlobClient(blobName).exists();
     }
+    public void deleteBlob(String blobName) {
+    try {
+        BlobContainerClient containerClient = blobServiceClient.getBlobContainerClient(containerName);
+        BlobClient blobClient = containerClient.getBlobClient(blobName);
+        blobClient.deleteIfExists();
+    } catch (Exception e) {
+        // Log but don't throw - the DB record is more important to clean up
+        System.err.println("Failed to delete blob: " + blobName + " - " + e.getMessage());
+    }
+}
 }

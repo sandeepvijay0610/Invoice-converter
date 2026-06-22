@@ -23,4 +23,7 @@ export const invoiceApi = {
 
   getById: (id: string) =>
     apiClient.get<InvoiceDetail>(`/invoices/${id}`).then(r => r.data),
+
+  delete: (id: string) =>
+    apiClient.delete(`/invoices/${id}`).then(r => r.data),
 };

@@ -109,7 +109,10 @@ services:
     restart: unless-stopped
     environment:
       - GITHUB_TOKEN=${GITHUB_TOKEN}
-      - MODEL_NAME=gpt-4o
+      - MODEL_NAME=${MODEL_NAME:-gpt-4o}
+      - MODEL_PROVIDER=${MODEL_PROVIDER}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL_NAME=${GEMINI_MODEL_NAME:-gemini-2.0-flash}
       - RABBITMQ_HOST=rabbitmq
       - RABBITMQ_USER=admin
       - RABBITMQ_PASS=password

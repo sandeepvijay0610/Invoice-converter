@@ -26,15 +26,17 @@ def _get(key: str, default: str) -> str:
 # ---------------------------------------------------------------------------
 # API / Model
 # ---------------------------------------------------------------------------
-GITHUB_TOKEN: str = _require("GITHUB_TOKEN")
+GITHUB_TOKEN: str = _get("GITHUB_TOKEN", "")  # Not required if using Gemini/Ollama
 MODEL_NAME: str = _get("MODEL_NAME", "gpt-4o-mini")
 GITHUB_ENDPOINT: str = _get("GITHUB_ENDPOINT", "https://models.inference.ai.azure.com")
 API_DELAY_SECONDS: int = int(_get("API_DELAY_SECONDS", "4"))
 MAX_RETRIES: int = int(_get("MAX_RETRIES", "3"))
 TIMEOUT_SECONDS: int = int(_get("TIMEOUT_SECONDS", "120"))
-MODEL_PROVIDER = os.getenv("MODEL_PROVIDER", "github")  # "github" or "ollama"
+MODEL_PROVIDER = os.getenv("MODEL_PROVIDER", "github")  # "github", "ollama", or "gemini"
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 OLLAMA_MODEL_NAME = os.getenv("OLLAMA_MODEL_NAME", "phi3.5:vision")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-2.0-flash")
 
 # ---------------------------------------------------------------------------
 # Ingestor (Piece 1)
@@ -65,27 +67,8 @@ SAP_CURRENCY: str = _get("SAP_CURRENCY", "INR")
 # ---------------------------------------------------------------------------
 # Date plausibility bounds
 # ---------------------------------------------------------------------------
-# ANOMALY FIX: the date parser previously accepted any syntactically valid
-# date with zero real-world plausibility check. A vision model misreading a
-# year digit (e.g. "2025" -> "2013") produced a perfectly well-formed
-# YYYY-MM-DD string that sailed straight through to READY_FOR_SAP — the
-# math validation only checks arithmetic, never date sanity. GPT-4o-mini in
-# particular was observed doing this consistently on real invoices.
-#
-# GST_EFFECTIVE_DATE: India's GST regime took legal effect on 2017-07-01.
-# Any invoice claiming tax_regime="GST" dated before this is definitionally
-# impossible — GST didn't exist yet. This is a hard, deterministic fact, not
-# a model judgment call, so it's enforced in code rather than left to the AI.
 GST_EFFECTIVE_DATE: str = "2017-07-01"
-
-# MIN_PLAUSIBLE_INVOICE_DATE: a generous floor for ANY invoice regardless of
-# regime, to catch wildly wrong OCR/vision misreads (e.g. a 1900s date from
-# a garbled year). Not regime-specific, just a sanity floor.
 MIN_PLAUSIBLE_INVOICE_DATE: str = "1990-01-01"
-
-# MAX_FUTURE_DAYS: invoices dated more than this many days in the future are
-# almost certainly a misread (e.g. month/day swapped, or a digit transposed)
-# rather than a real future-dated document.
 MAX_FUTURE_DAYS: int = 30
 
 # ---------------------------------------------------------------------------
@@ -105,9 +88,5 @@ LINE_ITEM_LABELS: frozenset[str] = frozenset({
     "item_description", "hsn_sac_code", "item_quantity", "item_unit_price", "item_line_amount",
 })
 
-# FIX (vulnerability C): vendor_gstin is only required when tax_regime == "GST".
-# Pre-2017 Excise invoices and international invoices legitimately have no
-# GSTIN at all — DocumentMapper._determine_status applies this conditionally
-# rather than as a blanket requirement (see mapper_parser.py).
 REQUIRED_FIELDS: frozenset[str] = frozenset({"total_invoice_amount"})
 REQUIRED_FIELDS_GST_ONLY: frozenset[str] = frozenset({"vendor_gstin"})
