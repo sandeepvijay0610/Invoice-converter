@@ -9,10 +9,11 @@ import org.hibernate.type.SqlTypes;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.UUID;
 
 @Entity
 @Table(name = "invoices")
-@Data // Lombok automatically generates Getters, Setters, and toString() for us
+@Data
 @NoArgsConstructor
 @AllArgsConstructor
 public class Invoice {
@@ -22,15 +23,14 @@ public class Invoice {
     private Long id;
 
     @Column(name = "doc_id", unique = true, nullable = false)
-    private String docId; // e.g., INV-2026-00123
+    private String docId;
 
     @Column(name = "file_path", nullable = false)
-    private String filePath; // The Azurite Object Storage URL
+    private String filePath;
 
     @Column(nullable = false)
-    private String status = "PENDING"; // PENDING, PROCESSING, READY_FOR_SAP, REQUIRES_MANUAL_REVIEW
+    private String status = "PENDING";
 
-    // Quick query fields so your React Dashboard can filter and sort fast
     @Column(name = "vendor_name")
     private String vendorName;
 
@@ -43,11 +43,12 @@ public class Invoice {
     @Column(name = "company_code")
     private String companyCode;
 
-    // The "Goated" PostgreSQL feature: Native JSONB storage
-    // This holds the exact dictionary your Python worker spits out
+    @Column(name = "user_id")
+    private UUID userId;
+
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "extracted_payload", columnDefinition = "jsonb")
-    private String extractedPayload; 
+    private String extractedPayload;
 
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt = LocalDateTime.now();

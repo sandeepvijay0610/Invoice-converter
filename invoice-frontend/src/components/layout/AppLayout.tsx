@@ -1,4 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
+import { UserButton, useUser } from '@clerk/clerk-react';
 import { LayoutDashboard, Upload, FileText } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -9,6 +10,7 @@ const NAV_ITEMS = [
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
+  const { user } = useUser();
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -38,7 +40,11 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             </Link>
           ))}
         </nav>
-        <div className="p-4 border-t border-gray-100">
+        <div className="p-4 border-t border-gray-100 space-y-3">
+          <div className="flex items-center gap-2">
+            <UserButton afterSignOutUrl="/" />
+            <span className="text-sm text-gray-600">{user?.fullName || user?.primaryEmailAddress?.emailAddress}</span>
+          </div>
           <p className="text-xs text-gray-400">Legacy Document Digitizer v1.0</p>
         </div>
       </aside>

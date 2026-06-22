@@ -7,19 +7,27 @@ const apiClient = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+apiClient.interceptors.request.use(async (config) => {
+  try {
+    const clerkModule = await import('@clerk/clerk-react') as any;
+    const token = await clerkModule.Clerk?.session?.getToken();
+    if (token) {
+      config.headers['Authorization'] = `Bearer ${token}`;
+    }
+  } catch (e) {
+    // Clerk not available
+  }
+  return config;
+});
+
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
-    // FIX: every error body the backend actually sends uses {"error": "..."}
-    // (see request-upload, /process, /retry in InvoiceController) — but this
-    // only ever looked for `.message`, so real backend error text (like
-    // "Upload not found in storage...") never reached the toast and fell
-    // back to a generic Axios message instead.
-    const message =
-      error.response?.data?.error ||
-      error.response?.data?.message ||
-      error.message ||
-      'Request failed';
+    if (error.response?.status === 401) {
+      toast.error("Session expired. Please login again.");
+      return Promise.reject(error);
+    }
+    const message = error.response?.data?.error || error.message || 'Request failed';
     toast.error(message);
     return Promise.reject(error);
   }

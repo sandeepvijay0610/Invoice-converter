@@ -3,40 +3,90 @@ package com.kaavian.invoice_api.controller;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaavian.invoice_api.entity.Invoice;
+import com.kaavian.invoice_api.entity.User;
 import com.kaavian.invoice_api.repository.InvoiceRepository;
+import com.kaavian.invoice_api.repository.UserRepository;
 import com.kaavian.invoice_api.service.BlobStorageService;
 import com.kaavian.invoice_api.messaging.MessageProducer;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.bind.annotation.RequestMethod;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.Base64;
 
 @RestController
-@RequestMapping("/api/invoices")
+@RequestMapping("/api")
 @CrossOrigin(origins = "http://localhost:5173", methods = {RequestMethod.GET, RequestMethod.POST, RequestMethod.PUT, RequestMethod.DELETE, RequestMethod.OPTIONS})
 public class InvoiceController {
 
     private final InvoiceRepository repository;
+    private final UserRepository userRepository;
     private final BlobStorageService storageService;
     private final MessageProducer messageProducer;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public InvoiceController(InvoiceRepository repository, BlobStorageService storageService, MessageProducer messageProducer) {
+    public InvoiceController(InvoiceRepository repository, UserRepository userRepository,
+                             BlobStorageService storageService, MessageProducer messageProducer) {
         this.repository = repository;
+        this.userRepository = userRepository;
         this.storageService = storageService;
         this.messageProducer = messageProducer;
     }
 
-    // 1. Endpoint: Request a secure upload URL
-    @PostMapping("/request-upload")
+    private UUID getCurrentUserId() {
+        var request = ((ServletRequestAttributes) RequestContextHolder.currentRequestAttributes()).getRequest();
+        User user = (User) request.getAttribute("authenticatedUser");
+        if (user == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Not authenticated");
+        }
+        return user.getId();
+    }
+
+    private boolean isAdmin() {
+        var request = ((ServletRequestAttributes) RequestContextHolder.currentRequestAttributes()).getRequest();
+        User user = (User) request.getAttribute("authenticatedUser");
+        return user != null && "admin".equals(user.getRole());
+    }
+
+    @PostMapping("/auth/login")
+    public ResponseEntity<Map<String, String>> login(@RequestHeader(value = "Authorization", required = false) String authHeader) {
+        if (authHeader == null || !authHeader.startsWith("Basic ")) {
+            return ResponseEntity.status(401).body(Map.of("error", "Missing credentials"));
+        }
+
+        String base64Credentials = authHeader.substring(6);
+        String credentials = new String(Base64.getDecoder().decode(base64Credentials));
+        String[] parts = credentials.split(":", 2);
+
+        if (parts.length != 2) {
+            return ResponseEntity.status(401).body(Map.of("error", "Invalid credentials format"));
+        }
+
+        var userOpt = userRepository.findByUsername(parts[0]);
+        if (userOpt.isEmpty() || !userOpt.get().getPassword().equals(parts[1])) {
+            return ResponseEntity.status(401).body(Map.of("error", "Invalid username or password"));
+        }
+
+        User user = userOpt.get();
+        return ResponseEntity.ok(Map.of(
+            "username", user.getUsername(),
+            "tenantName", user.getTenantName(),
+            "role", user.getRole()
+        ));
+    }
+
+    @PostMapping("/invoices/request-upload")
     public ResponseEntity<Map<String, String>> requestUpload(@RequestBody Map<String, String> body) {
         String filename = body.get("filename");
         if (filename == null || filename.isBlank()) {
@@ -47,13 +97,9 @@ public class InvoiceController {
 
         Invoice invoice = new Invoice();
         invoice.setDocId("INV-" + UUID.randomUUID().toString().substring(0, 8));
-
-        // FIX (vulnerability A): persist only the bare blob name, never the
-        // SAS-tokened URL. The token is handed to the browser in the response
-        // below and is never written to the DB or queued — so it can't expire
-        // out from under a backlogged worker.
         invoice.setFilePath(target.blobName());
         invoice.setStatus("PENDING");
+        invoice.setUserId(getCurrentUserId());
         repository.save(invoice);
 
         return ResponseEntity.ok(Map.of(
@@ -62,53 +108,47 @@ public class InvoiceController {
         ));
     }
 
-    // 2. Endpoint: Trigger the AI processing after the frontend finishes uploading
-    @PostMapping("/{id}/process")
+    @PostMapping("/invoices/{id}/process")
     public ResponseEntity<?> triggerProcessing(@PathVariable String id) {
         Invoice invoice = repository.findByDocId(id);
         if (invoice == null) {
             return ResponseEntity.notFound().build();
         }
 
-        // FIX: the browser's upload PUT is sent with mode:'no-cors' (see
-        // BlobStorageService.blobExists' javadoc), so a failed upload never
-        // throws on the frontend and this endpoint used to get called
-        // regardless. Verify the blob actually landed before queueing —
-        // this is the first point in the flow that can reliably tell.
         if (!storageService.blobExists(invoice.getFilePath())) {
             return ResponseEntity.badRequest().body(Map.of(
-                    "error", "Upload not found in storage — the file may not have finished uploading. Please try uploading again."
+                    "error", "Upload not found in storage. Please try uploading again."
             ));
         }
 
-        // invoice.getFilePath() is now just the blob name (e.g.
-        // "550e8400-...-clean.pdf"), not a URL — the worker resolves it via
-        // the Azure SDK using its own connection string.
         messageProducer.sendExtractionRequest(invoice.getDocId(), invoice.getFilePath());
-
         invoice.setStatus("PROCESSING");
         repository.save(invoice);
 
         return ResponseEntity.ok(Map.of("message", "Processing started for " + id));
     }
 
-    // 3. Endpoint: List invoices for the dashboard, with optional status
-    // filter and pagination. Without this, the frontend has no way to show
-    // a table of invoices at all — it would otherwise need direct DB access.
-    @GetMapping
+    @GetMapping("/invoices")
     public ResponseEntity<Map<String, Object>> listInvoices(
             @RequestParam(required = false) String status,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
 
-        // Cap page size so a frontend bug or malicious query can't force a
-        // huge unpaginated pull from the DB.
         int safeSize = Math.min(Math.max(size, 1), 100);
         Pageable pageable = PageRequest.of(Math.max(page, 0), safeSize, Sort.by("createdAt").descending());
 
-        Page<Invoice> result = (status != null && !status.isBlank())
-                ? repository.findByStatus(status, pageable)
-                : repository.findAllByOrderByCreatedAtDesc(pageable);
+        UUID userId = getCurrentUserId();
+        Page<Invoice> result;
+
+        if (isAdmin() && (status == null || status.isBlank())) {
+            result = repository.findAllByOrderByCreatedAtDesc(pageable);
+        } else if (isAdmin()) {
+            result = repository.findByStatus(status, pageable);
+        } else if (status != null && !status.isBlank()) {
+            result = repository.findByUserIdAndStatus(userId, status, pageable);
+        } else {
+            result = repository.findAllByUserId(userId, pageable);
+        }
 
         List<Map<String, Object>> items = result.getContent().stream()
                 .map(this::toSummaryDto)
@@ -124,11 +164,7 @@ public class InvoiceController {
         return ResponseEntity.ok(response);
     }
 
-    // 4. Endpoint: Get a single invoice's full detail, including the parsed
-    // extracted_payload (header/financial/line-item data from the AI
-    // pipeline). Needed for an invoice detail view and for the frontend to
-    // poll status after upload instead of guessing when processing is done.
-    @GetMapping("/{id}")
+    @GetMapping("/invoices/{id}")
     public ResponseEntity<Map<String, Object>> getInvoice(@PathVariable String id) {
         Invoice invoice = repository.findByDocId(id);
         if (invoice == null) {
@@ -137,13 +173,7 @@ public class InvoiceController {
         return ResponseEntity.ok(toDetailDto(invoice));
     }
 
-    // 5. Endpoint: Retry a stuck invoice. Useful for RATE_LIMITED invoices
-    // that exhausted the worker's own requeue budget (see
-    // MAX_RATE_LIMIT_REQUEUES in main.py) and for FAILED invoices a human
-    // wants to re-attempt after fixing whatever caused the failure (e.g. a
-    // transient Azurite/network blip). This is just triggerProcessing under
-    // a clearer name for this use case — same underlying action.
-    @PostMapping("/{id}/retry")
+    @PostMapping("/invoices/{id}/retry")
     public ResponseEntity<Map<String, String>> retryInvoice(@PathVariable String id) {
         Invoice invoice = repository.findByDocId(id);
         if (invoice == null) {
@@ -167,15 +197,25 @@ public class InvoiceController {
         ));
     }
 
-    // ------------------------------------------------------------------
-    // DTO helpers
-    // ------------------------------------------------------------------
+    @DeleteMapping("/invoices/{id}")
+    public ResponseEntity<Map<String, String>> deleteInvoice(@PathVariable String id) {
+        Invoice invoice = repository.findByDocId(id);
+        if (invoice == null) {
+            return ResponseEntity.notFound().build();
+        }
 
-    /**
-     * Lightweight shape for the list view — omits the full extracted_payload
-     * JSON to keep list responses small, since a dashboard table doesn't
-     * need line items, just headline fields.
-     */
+        if (invoice.getFilePath() != null && !invoice.getFilePath().isBlank()) {
+            storageService.deleteBlob(invoice.getFilePath());
+        }
+
+        repository.delete(invoice);
+
+        return ResponseEntity.ok(Map.of(
+            "id", id,
+            "message", "Invoice deleted successfully"
+        ));
+    }
+
     private Map<String, Object> toSummaryDto(Invoice invoice) {
         Map<String, Object> dto = new LinkedHashMap<>();
         dto.put("id", invoice.getDocId());
@@ -188,11 +228,6 @@ public class InvoiceController {
         return dto;
     }
 
-    /**
-     * Full shape for the detail view — includes the parsed extracted_payload
-     * as a real JSON object (not a string) so the frontend doesn't need to
-     * JSON.parse() it client-side.
-     */
     private Map<String, Object> toDetailDto(Invoice invoice) {
         Map<String, Object> dto = new LinkedHashMap<>();
         dto.put("id", invoice.getDocId());
@@ -210,35 +245,11 @@ public class InvoiceController {
             try {
                 parsedPayload = objectMapper.readTree(rawPayload);
             } catch (Exception e) {
-                // Malformed JSON in the column shouldn't crash the whole
-                // response — surface it as null and let the frontend show
-                // "no extraction data available" rather than a 500.
                 parsedPayload = null;
             }
         }
         dto.put("extractedPayload", parsedPayload);
 
         return dto;
-    }
-    // 6. Endpoint: Delete an invoice and its associated blob from storage.
-    @DeleteMapping("/{id}")
-    public ResponseEntity<Map<String, String>> deleteInvoice(@PathVariable String id) {
-        Invoice invoice = repository.findByDocId(id);
-        if (invoice == null) {
-            return ResponseEntity.notFound().build();
-        }
-
-        // Delete the blob from Azurite first
-        if (invoice.getFilePath() != null && !invoice.getFilePath().isBlank()) {
-            storageService.deleteBlob(invoice.getFilePath());
-        }
-
-        // Delete from database
-        repository.delete(invoice);
-
-        return ResponseEntity.ok(Map.of(
-            "id", id,
-            "message", "Invoice deleted successfully"
-        ));
     }
 }
