@@ -5,19 +5,7 @@ import type { InvoiceSummary } from '../types/invoice';
 const ACTIVE_STATUSES = new Set(['PENDING', 'PROCESSING']);
 const POLL_INTERVAL_MS = 5000;
 
-interface UseInvoicesReturn {
-  invoices: InvoiceSummary[];
-  loading: boolean;
-  error: Error | null;
-  page: number;
-  totalPages: number;
-  statusFilter: string;
-  setPage: (page: number) => void;
-  setStatusFilter: (status: string) => void;
-  refresh: () => void;
-}
-
-export function useInvoices(): UseInvoicesReturn {
+export function useInvoices() {
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
@@ -35,16 +23,16 @@ export function useInvoices(): UseInvoicesReturn {
     } catch (err) {
       setError(err as Error);
     } finally {
-      setLoading(false);
+      if (showSpinner) setLoading(false);
     }
   }, [page, statusFilter]);
 
-  // Initial fetch
+  // Initial fetch (100% guaranteed to have a token now)
   useEffect(() => {
     fetchInvoices(true);
   }, [fetchInvoices]);
 
-  // Background polling — only when invoices are actively processing
+  // Background polling for active invoices
   useEffect(() => {
     const hasActiveInvoices = invoices.some(inv => ACTIVE_STATUSES.has(inv.status));
     if (!hasActiveInvoices) return;

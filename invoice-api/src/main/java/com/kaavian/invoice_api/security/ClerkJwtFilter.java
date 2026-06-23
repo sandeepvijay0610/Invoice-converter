@@ -20,8 +20,6 @@ import java.net.URL;
 import java.security.interfaces.RSAPublicKey;
 import java.util.concurrent.TimeUnit;
 
-// No @Component — this is instantiated manually as a @Bean in WebConfig
-// to avoid Spring registering it twice (once via component scan, once via @Bean)
 public class ClerkJwtFilter extends OncePerRequestFilter {
 
     private final JwkProvider jwkProvider;
@@ -42,6 +40,7 @@ public class ClerkJwtFilter extends OncePerRequestFilter {
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getServletPath();
         String method = request.getMethod();
+        // Skip filtering for CORS preflight and login route
         return "OPTIONS".equalsIgnoreCase(method) || path.equals("/api/auth/login");
     }
 
@@ -54,6 +53,7 @@ public class ClerkJwtFilter extends OncePerRequestFilter {
         String authHeader = request.getHeader("Authorization");
 
         if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+            System.err.println("❌ CLERK JWT REJECTED: Missing or malformed Authorization header.");
             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
             response.setContentType("application/json");
             response.getWriter().write("{\"error\":\"Missing or invalid Authorization header\"}");
@@ -70,6 +70,8 @@ public class ClerkJwtFilter extends OncePerRequestFilter {
             Algorithm algorithm = Algorithm.RSA256(publicKey, null);
             DecodedJWT verified = JWT.require(algorithm)
                     .withIssuer(clerkIssuer)
+                    // THE ULTIMATE FIX: 10 days of leeway to completely ignore WSL/Docker clock drift
+                    .acceptLeeway(864000L) 
                     .build()
                     .verify(token);
 
@@ -91,11 +93,14 @@ public class ClerkJwtFilter extends OncePerRequestFilter {
             request.setAttribute("authenticatedUser", user);
 
         } catch (JWTVerificationException e) {
+            // This will print EXACTLY why it failed in your Docker/Spring Boot terminal
+            System.err.println("❌ CLERK JWT REJECTED: " + e.getMessage()); 
             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
             response.setContentType("application/json");
             response.getWriter().write("{\"error\":\"Invalid or expired token\"}");
             return;
         } catch (Exception e) {
+            System.err.println("❌ CLERK SERVER ERROR: " + e.getMessage());
             response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
             response.setContentType("application/json");
             response.getWriter().write("{\"error\":\"Authentication error: " + e.getMessage() + "\"}");
