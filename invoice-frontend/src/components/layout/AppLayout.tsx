@@ -42,8 +42,10 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         </nav>
         <div className="p-4 border-t border-gray-100 space-y-3">
           <div className="flex items-center gap-2">
-            <UserButton afterSignOutUrl="/" />
-            <span className="text-sm text-gray-600">{user?.fullName || user?.primaryEmailAddress?.emailAddress}</span>
+            <UserButton />
+            <span className="text-sm text-gray-600">
+              {user?.fullName || user?.primaryEmailAddress?.emailAddress}
+            </span>
           </div>
           <p className="text-xs text-gray-400">Legacy Document Digitizer v1.0</p>
         </div>

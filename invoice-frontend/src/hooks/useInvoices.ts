@@ -2,6 +2,9 @@ import { useState, useEffect, useCallback } from 'react';
 import { invoiceApi } from '../api/invoices';
 import type { InvoiceSummary } from '../types/invoice';
 
+const ACTIVE_STATUSES = new Set(['PENDING', 'PROCESSING']);
+const POLL_INTERVAL_MS = 5000;
+
 interface UseInvoicesReturn {
   invoices: InvoiceSummary[];
   loading: boolean;
@@ -22,8 +25,8 @@ export function useInvoices(): UseInvoicesReturn {
   const [totalPages, setTotalPages] = useState(0);
   const [statusFilter, setStatusFilter] = useState('');
 
-  const fetchInvoices = useCallback(async () => {
-    setLoading(true);
+  const fetchInvoices = useCallback(async (showSpinner = false) => {
+    if (showSpinner) setLoading(true);
     setError(null);
     try {
       const data = await invoiceApi.list(page, statusFilter);
@@ -36,7 +39,29 @@ export function useInvoices(): UseInvoicesReturn {
     }
   }, [page, statusFilter]);
 
-  useEffect(() => { fetchInvoices(); }, [fetchInvoices]);
+  // Initial fetch
+  useEffect(() => {
+    fetchInvoices(true);
+  }, [fetchInvoices]);
 
-  return { invoices, loading, error, page, totalPages, statusFilter, setPage, setStatusFilter, refresh: fetchInvoices };
+  // Background polling — only when invoices are actively processing
+  useEffect(() => {
+    const hasActiveInvoices = invoices.some(inv => ACTIVE_STATUSES.has(inv.status));
+    if (!hasActiveInvoices) return;
+
+    const interval = setInterval(() => fetchInvoices(false), POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [invoices, fetchInvoices]);
+
+  return {
+    invoices,
+    loading,
+    error,
+    page,
+    totalPages,
+    statusFilter,
+    setPage,
+    setStatusFilter,
+    refresh: () => fetchInvoices(true),
+  };
 }

@@ -6,26 +6,13 @@
 		<groupId>org.springframework.boot</groupId>
 		<artifactId>spring-boot-starter-parent</artifactId>
 		<version>3.5.15</version>
-		<relativePath/> <!-- lookup parent from repository -->
+		<relativePath/>
 	</parent>
 	<groupId>com.kaavian</groupId>
 	<artifactId>invoice-api</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
 	<name/>
 	<description/>
-	<url/>
-	<licenses>
-		<license/>
-	</licenses>
-	<developers>
-		<developer/>
-	</developers>
-	<scm>
-		<connection/>
-		<developerConnection/>
-		<tag/>
-		<url/>
-	</scm>
 	<properties>
 		<java.version>17</java.version>
 		<spring-cloud-azure.version>6.1.0</spring-cloud-azure.version>
@@ -46,6 +33,21 @@
 		<dependency>
 			<groupId>com.azure.spring</groupId>
 			<artifactId>spring-cloud-azure-starter-storage</artifactId>
+		</dependency>
+
+		<!-- FIX: Added for Clerk JWT verification.
+		     java-jwt validates the token signature and claims.
+		     jwks-rsa fetches Clerk's public keys from their JWKS endpoint
+		     so we never hard-code a secret. -->
+		<dependency>
+			<groupId>com.auth0</groupId>
+			<artifactId>java-jwt</artifactId>
+			<version>4.4.0</version>
+		</dependency>
+		<dependency>
+			<groupId>com.auth0</groupId>
+			<artifactId>jwks-rsa</artifactId>
+			<version>0.22.1</version>
 		</dependency>
 
 		<dependency>
@@ -133,5 +135,4 @@
 			</plugin>
 		</plugins>
 	</build>
-
 </project>

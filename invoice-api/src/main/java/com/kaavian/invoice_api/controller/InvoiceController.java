@@ -204,6 +204,15 @@ public class InvoiceController {
             return ResponseEntity.notFound().build();
         }
 
+        // Block deletion if the invoice is currently being processed by a worker.
+        // Without this, the worker finishes and tries to update a DB row that no
+        // longer exists, causing a silent error in the worker logs.
+        if ("PROCESSING".equals(invoice.getStatus())) {
+            return ResponseEntity.badRequest().body(Map.of(
+                "error", "Cannot delete an invoice that is currently processing. Wait for it to finish or fail first."
+            ));
+        }
+
         if (invoice.getFilePath() != null && !invoice.getFilePath().isBlank()) {
             storageService.deleteBlob(invoice.getFilePath());
         }

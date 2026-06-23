@@ -34,11 +34,6 @@ services:
       retries: 5
 
   # 3. Local Azure Storage Emulator (Azurite)
-  # Renamed service to "azurite" (was "sap-azurite") so the SAME
-  # connection-string hostname works whether you're inside this compose
-  # network or pointing at a real Azure account later: only the
-  # AZURE_STORAGE_CONNECTION_STRING value changes between environments,
-  # never the application code.
   azurite:
     image: mcr.microsoft.com/azure-storage/azurite
     container_name: sap-azurite
@@ -50,6 +45,7 @@ services:
     volumes:
       - azurite-data:/data
     command: "azurite --loose --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 --location /data --skipApiVersionCheck"
+
   # 4. Spring Boot API
   invoice-api:
     build:
@@ -67,20 +63,13 @@ services:
       SPRING_RABBITMQ_PORT: 5672
       SPRING_RABBITMQ_USERNAME: admin
       SPRING_RABBITMQ_PASSWORD: password
-      # FIX (vulnerability B): the SAS URL generated for the browser still
-      # needs a browser-reachable host (127.0.0.1 via the published port),
-      # but the bare blob name we now persist/queue is host-agnostic — so
-      # this only affects the upload step, never backend-to-backend fetch.
-      # invoice-api runs INSIDE this Docker network, so its own client must
-      # reach Azurite at the service name "azurite" — never 127.0.0.1 (that
-      # would be the invoice-api container's own loopback, hence the
-      # "Connection refused" error this fixes).
       AZURE_STORAGE_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;"
-      # The browser, on the other hand, runs on your Windows host OUTSIDE
-      # Docker and can only reach Azurite via the published port on
-      # 127.0.0.1 — so the SAS URL we hand back to it gets its host rewritten
-      # to this value (see BlobStorageService.generateUploadTarget).
       AZURE_STORAGE_PUBLIC_HOST: "127.0.0.1"
+      # Clerk JWT verification — get your domain from Clerk Dashboard → API Keys → Advanced
+      # It looks like: https://your-app.clerk.accounts.dev  (dev)
+      # or: https://clerk.yourdomain.com  (prod)
+      CLERK_JWKS_URL: "https://promoted-mackerel-0.clerk.accounts.dev/.well-known/jwks.json"
+      CLERK_ISSUER: "https://promoted-mackerel-0.clerk.accounts.dev"
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -96,16 +85,6 @@ services:
       context: .
       dockerfile: Dockerfile
     image: sap-invoice-pipeline
-    # ANOMALY FIX: this service had no restart policy at all. When main.py
-    # crashed on an unguarded RabbitMQ connection failure (see main.py's
-    # _connect_rabbitmq backoff fix), the container exited and stayed dead
-    # — Docker never tried to bring it back. "unless-stopped" means Docker
-    # will restart it automatically on any crash, while still respecting an
-    # explicit `docker compose stop`. This is a backstop on top of the
-    # in-process retry/reconnect logic, not a replacement for it — the
-    # retry loop handles transient broker unavailability gracefully without
-    # ever needing the container to restart; this policy only kicks in if
-    # the process exits for some other unexpected reason.
     restart: unless-stopped
     environment:
       - GITHUB_TOKEN=${GITHUB_TOKEN}
@@ -121,9 +100,6 @@ services:
       - DB_USER=admin
       - DB_PASS=password
       - DB_NAME=sap_invoices
-      # FIX (vulnerability A & B): worker fetches blobs directly via the SDK
-      # using this connection string — hostname is "azurite" (the Docker
-      # service name), no SAS token, no expiry, no string-replace hacks.
       - AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;
       - BLOB_CONTAINER_NAME=invoices
     volumes:

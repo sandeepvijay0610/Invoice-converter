@@ -7,26 +7,21 @@ const apiClient = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
-apiClient.interceptors.request.use(async (config) => {
-  try {
-    const clerkModule = await import('@clerk/clerk-react') as any;
-    const token = await clerkModule.Clerk?.session?.getToken();
-    if (token) {
-      config.headers['Authorization'] = `Bearer ${token}`;
-    }
-  } catch (e) {
-    // Clerk not available
+// Token is set externally by useAuthSetup hook once Clerk is ready.
+// This avoids the window.Clerk polling race condition entirely.
+export function setAuthToken(token: string | null) {
+  if (token) {
+    apiClient.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+  } else {
+    delete apiClient.defaults.headers.common['Authorization'];
   }
-  return config;
-});
+}
 
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
-      toast.error("Session expired. Please login again.");
-      return Promise.reject(error);
-    }
+    // Don't redirect on 401 — just show the error and reject.
+    // Clerk handles session expiry via its own UI.
     const message = error.response?.data?.error || error.message || 'Request failed';
     toast.error(message);
     return Promise.reject(error);
