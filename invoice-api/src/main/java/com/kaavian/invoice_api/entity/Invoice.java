@@ -50,6 +50,11 @@ public class Invoice {
     @Column(name = "extracted_payload", columnDefinition = "jsonb")
     private String extractedPayload;
 
+    // SAP document number assigned after successful export to S/4HANA
+    // e.g. "5105609876". Null until status = SAP_EXPORTED.
+    @Column(name = "sap_document_id")
+    private String sapDocumentId;
+
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt = LocalDateTime.now();
 }

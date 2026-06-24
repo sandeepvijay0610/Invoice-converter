@@ -6,10 +6,10 @@ export const invoiceApi = {
     apiClient.post<UploadResponse>('/invoices/request-upload', { filename }).then(r => r.data),
 
   uploadFile: (uploadUrl: string, file: File) =>
-    fetch(uploadUrl, { 
-      method: 'PUT', 
-      body: file, 
-      headers: { 'x-ms-blob-type': 'BlockBlob' } 
+    fetch(uploadUrl, {
+      method: 'PUT',
+      body: file,
+      headers: { 'x-ms-blob-type': 'BlockBlob' }
     }),
 
   process: (id: string) =>
@@ -26,4 +26,7 @@ export const invoiceApi = {
 
   delete: (id: string) =>
     apiClient.delete(`/invoices/${id}`).then(r => r.data),
+
+  exportToSAP: (id: string): Promise<{ sapDocumentId: string; status: string; message: string }> =>
+    apiClient.post(`/invoices/${id}/export`).then(r => r.data),
 };

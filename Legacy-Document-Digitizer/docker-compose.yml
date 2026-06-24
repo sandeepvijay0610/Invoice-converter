@@ -70,6 +70,8 @@ services:
       # or: https://clerk.yourdomain.com  (prod)
       CLERK_JWKS_URL: "https://promoted-mackerel-0.clerk.accounts.dev/.well-known/jwks.json"
       CLERK_ISSUER: "https://promoted-mackerel-0.clerk.accounts.dev"
+      SAP_BASE_URL: "https://db94f59f-1d13-4c39-83d9-ceb89e203c31.mock.pstmn.io"
+      SAP_API_PATH: "/sap/opu/odata/sap/API_SUPPLIERINVOICE_PROCESS_SRV/A_SupplierInvoice"
     depends_on:
       rabbitmq:
         condition: service_healthy

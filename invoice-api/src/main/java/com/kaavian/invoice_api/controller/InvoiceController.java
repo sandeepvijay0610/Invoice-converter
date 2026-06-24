@@ -8,6 +8,7 @@ import com.kaavian.invoice_api.repository.InvoiceRepository;
 import com.kaavian.invoice_api.repository.UserRepository;
 import com.kaavian.invoice_api.service.BlobStorageService;
 import com.kaavian.invoice_api.messaging.MessageProducer;
+import com.kaavian.invoice_api.sap.SAPIntegrationService;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -34,14 +35,17 @@ public class InvoiceController {
     private final UserRepository userRepository;
     private final BlobStorageService storageService;
     private final MessageProducer messageProducer;
+    private final SAPIntegrationService sapIntegrationService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public InvoiceController(InvoiceRepository repository, UserRepository userRepository,
-                             BlobStorageService storageService, MessageProducer messageProducer) {
+                             BlobStorageService storageService, MessageProducer messageProducer,
+                             SAPIntegrationService sapIntegrationService) {
         this.repository = repository;
         this.userRepository = userRepository;
         this.storageService = storageService;
         this.messageProducer = messageProducer;
+        this.sapIntegrationService = sapIntegrationService;
     }
 
     private UUID getCurrentUserId() {
@@ -224,6 +228,36 @@ public class InvoiceController {
             "message", "Invoice deleted successfully"
         ));
     }
+
+    @PostMapping("/invoices/{id}/export")
+    public ResponseEntity<?> exportToSAP(@PathVariable String id) {
+        Invoice invoice = repository.findByDocId(id);
+        if (invoice == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        // Only READY_FOR_SAP invoices can be exported
+        if (!"READY_FOR_SAP".equals(invoice.getStatus())) {
+            return ResponseEntity.badRequest().body(Map.of(
+                "error", "Invoice must be in READY_FOR_SAP status to export. Current status: " + invoice.getStatus()
+            ));
+        }
+
+        // Ownership check — users can only export their own invoices
+        if (!invoice.getUserId().equals(getCurrentUserId()) && !isAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(Map.of("error", "You do not have permission to export this invoice"));
+        }
+
+        try {
+            var result = sapIntegrationService.exportToSAP(invoice);
+            return ResponseEntity.ok(result);
+        } catch (SAPIntegrationService.SAPExportException e) {
+            return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body(Map.of("error", e.getMessage()));
+        }
+    }
+
 
     private Map<String, Object> toSummaryDto(Invoice invoice) {
         Map<String, Object> dto = new LinkedHashMap<>();

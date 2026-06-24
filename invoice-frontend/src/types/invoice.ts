@@ -1,7 +1,8 @@
 export interface InvoiceSummary {
   id: string;
-  status: 'PENDING' | 'PROCESSING' | 'READY_FOR_SAP' | 'REQUIRES_MANUAL_REVIEW' | 'FAILED' | 'RATE_LIMITED';
+  status: 'PENDING' | 'PROCESSING' | 'READY FOR SAP' | 'SAP EXPORTED' | 'REQUIRES MANUAL REVIEW' | 'FAILED' | 'RATE LIMITED';
   vendorName: string | null;
+  invoiceNumber: string | null;
   totalAmount: number | null;
   companyCode: string | null;
   createdAt: string;
@@ -46,6 +47,7 @@ export interface ExtractedPayload {
 export interface InvoiceDetail extends InvoiceSummary {
   filePath: string;
   extractedPayload: ExtractedPayload | null;
+  sapDocumentId: string | null;
 }
 
 export interface PaginatedResponse {
@@ -67,13 +69,4 @@ export interface StatsResponse {
   processing: number;
   needsReview: number;
   failed: number;
-}
-export interface InvoiceSummary {
-  id: string;
-  status: 'PENDING' | 'PROCESSING' | 'READY_FOR_SAP' | 'REQUIRES_MANUAL_REVIEW' | 'FAILED' | 'RATE_LIMITED';
-  vendorName: string | null;
-  invoiceNumber: string | null;
-  totalAmount: number | null;
-  companyCode: string | null;
-  createdAt: string;
 }
