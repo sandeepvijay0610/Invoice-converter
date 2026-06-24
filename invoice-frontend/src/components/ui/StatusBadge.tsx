@@ -1,31 +1,40 @@
-import clsx from 'clsx';
+import React from 'react';
 
-const STATUS_STYLES: Record<string, string> = {
-  READY_FOR_SAP: 'bg-emerald-100 text-emerald-800 border-emerald-200',
-  PROCESSING: 'bg-amber-100 text-amber-800 border-amber-200',
-  PENDING: 'bg-slate-100 text-slate-600 border-slate-200',
-  REQUIRES_MANUAL_REVIEW: 'bg-red-100 text-red-800 border-red-200',
-  FAILED: 'bg-red-100 text-red-800 border-red-200',
-  RATE_LIMITED: 'bg-purple-100 text-purple-800 border-purple-200',
-};
+interface StatusBadgeProps {
+  status: string;
+}
 
-const STATUS_LABELS: Record<string, string> = {
-  READY_FOR_SAP: 'Ready for SAP',
-  PROCESSING: 'Processing',
-  PENDING: 'Pending',
-  REQUIRES_MANUAL_REVIEW: 'Needs Review',
-  FAILED: 'Failed',
-  RATE_LIMITED: 'Rate Limited',
-};
+export const StatusBadge: React.FC<StatusBadgeProps> = ({ status }) => {
+  // FIX: Normalize the string so "SAP EXPORTED" and "SAP_EXPORTED" are treated the exact same way
+  const normalizedStatus = status.replace(/ /g, '_').toUpperCase();
 
-export function StatusBadge({ status, size = 'sm' }: { status: string; size?: 'sm' | 'lg' }) {
+  const getStatusStyles = (statusCode: string) => {
+    switch (statusCode) {
+      case 'PENDING':
+        return 'bg-yellow-100 text-yellow-800 border-yellow-300 shadow-sm';
+      case 'PROCESSING':
+        return 'bg-blue-100 text-blue-800 border-blue-300 shadow-sm';
+      case 'READY_FOR_SAP':
+        return 'bg-purple-100 text-purple-800 border-purple-300 shadow-sm';
+      case 'SAP_EXPORTED':
+        return 'bg-emerald-100 text-emerald-800 border-emerald-300 shadow-sm';
+      case 'FAILED':
+      case 'RATE_LIMITED':
+        return 'bg-red-100 text-red-800 border-red-300 shadow-sm';
+      default:
+        // The gray fallback
+        return 'bg-gray-100 text-gray-800 border-gray-300 shadow-sm';
+    }
+  };
+
+  const formatStatus = (rawStatus: string) => {
+    // Replaces underscores with spaces so the UI always looks clean (e.g. "SAP EXPORTED")
+    return rawStatus.replace(/_/g, ' ');
+  };
+
   return (
-    <span className={clsx(
-      'inline-flex items-center border rounded-full font-medium',
-      size === 'lg' ? 'px-3 py-1 text-sm' : 'px-2.5 py-0.5 text-xs',
-      STATUS_STYLES[status] || 'bg-gray-100 text-gray-600 border-gray-200'
-    )}>
-      {STATUS_LABELS[status] || status}
+    <span className={`px-3 py-1 rounded-full text-xs font-semibold border ${getStatusStyles(normalizedStatus)} uppercase tracking-wider`}>
+      {formatStatus(status)}
     </span>
   );
-}
+};

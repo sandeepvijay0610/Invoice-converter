@@ -6,11 +6,7 @@ export const invoiceApi = {
     apiClient.post<UploadResponse>('/invoices/request-upload', { filename }).then(r => r.data),
 
   uploadFile: (uploadUrl: string, file: File) =>
-    fetch(uploadUrl, {
-      method: 'PUT',
-      body: file,
-      headers: { 'x-ms-blob-type': 'BlockBlob' }
-    }),
+    fetch(uploadUrl, { method: 'PUT', body: file, headers: { 'x-ms-blob-type': 'BlockBlob' } }),
 
   process: (id: string) =>
     apiClient.post(`/invoices/${id}/process`),
@@ -18,15 +14,21 @@ export const invoiceApi = {
   retry: (id: string) =>
     apiClient.post(`/invoices/${id}/retry`),
 
-  list: (page = 0, status = '') =>
-    apiClient.get<PaginatedResponse>('/invoices', { params: { page, size: 20, ...(status && { status }) } }).then(r => r.data),
+  delete: (id: string) =>
+    apiClient.delete(`/invoices/${id}`),
+
+  list: (status = '') =>
+    apiClient.get<PaginatedResponse>('/invoices', { 
+      params: { 
+        page: 0, 
+        size: 1000, 
+        ...(status && { status }) 
+      } 
+    }).then(r => r.data),
 
   getById: (id: string) =>
     apiClient.get<InvoiceDetail>(`/invoices/${id}`).then(r => r.data),
 
-  delete: (id: string) =>
-    apiClient.delete(`/invoices/${id}`).then(r => r.data),
-
-  exportToSAP: (id: string): Promise<{ sapDocumentId: string; status: string; message: string }> =>
-    apiClient.post(`/invoices/${id}/export`).then(r => r.data),
+  exportToSAP: (id: string) =>
+    apiClient.post(`/invoices/${id}/export-sap`).then(r => r.data),
 };

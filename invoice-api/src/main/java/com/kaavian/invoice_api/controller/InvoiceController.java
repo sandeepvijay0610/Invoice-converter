@@ -229,17 +229,20 @@ public class InvoiceController {
         ));
     }
 
-    @PostMapping("/invoices/{id}/export")
+@PostMapping("/invoices/{id}/export")
     public ResponseEntity<?> exportToSAP(@PathVariable String id) {
         Invoice invoice = repository.findByDocId(id);
         if (invoice == null) {
             return ResponseEntity.notFound().build();
         }
 
-        // Only READY_FOR_SAP invoices can be exported
-        if (!"READY_FOR_SAP".equals(invoice.getStatus())) {
+        // FIX: We now explicitly allow both READY_FOR_SAP and SAP_EXPORTED statuses
+        // FIX: Handle both underscore and space versions of the status
+        String status = invoice.getStatus();
+        if (!"READY_FOR_SAP".equals(status) && !"READY FOR SAP".equals(status) 
+            && !"SAP_EXPORTED".equals(status) && !"SAP EXPORTED".equals(status)) {
             return ResponseEntity.badRequest().body(Map.of(
-                "error", "Invoice must be in READY_FOR_SAP status to export. Current status: " + invoice.getStatus()
+                "error", "Invoice must be in READY_FOR_SAP status to export. Current status: " + status
             ));
         }
 

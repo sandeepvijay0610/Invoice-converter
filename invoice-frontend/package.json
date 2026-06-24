@@ -19,7 +19,8 @@
     "react-dom": "^19.2.6",
     "react-dropzone": "^15.0.0",
     "react-hot-toast": "^2.6.0",
-    "react-router-dom": "^7.18.0"
+    "react-router-dom": "^7.18.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

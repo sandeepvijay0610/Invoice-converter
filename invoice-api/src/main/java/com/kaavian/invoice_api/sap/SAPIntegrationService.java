@@ -89,13 +89,13 @@ public class SAPIntegrationService {
             String sapDocumentId = extractSapDocumentId(responseBody);
 
             // Step 4: Update the invoice record
-            invoice.setStatus("SAP_EXPORTED");
+            invoice.setStatus("SAP EXPORTED");
             invoice.setSapDocumentId(sapDocumentId);
             invoiceRepository.save(invoice);
 
             return Map.of(
                     "sapDocumentId", sapDocumentId,
-                    "status", "SAP_EXPORTED",
+                    "status", "SAP EXPORTED",
                     "message", "Successfully exported to SAP. Document: " + sapDocumentId
             );
 

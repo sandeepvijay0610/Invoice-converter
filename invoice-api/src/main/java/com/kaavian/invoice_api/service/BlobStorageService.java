@@ -4,6 +4,7 @@ import com.azure.storage.blob.BlobClient;
 import com.azure.storage.blob.BlobContainerClient;
 import com.azure.storage.blob.BlobServiceClient;
 import com.azure.storage.blob.BlobServiceClientBuilder;
+import com.azure.storage.blob.models.PublicAccessType;
 import com.azure.storage.blob.sas.BlobSasPermission;
 import com.azure.storage.blob.sas.BlobServiceSasSignatureValues;
 import org.springframework.beans.factory.annotation.Value;
@@ -45,6 +46,10 @@ public class BlobStorageService {
         if (!containerClient.exists()) {
             containerClient.create();
         }
+        
+        // NEW FIX: Make the container public so the React PDF Viewer iframe can read the blobs 
+        // without throwing a 403 AuthorizationFailure.
+        containerClient.setAccessPolicy(PublicAccessType.BLOB, null);
     }
 
     /**
@@ -113,14 +118,15 @@ public class BlobStorageService {
         BlobContainerClient containerClient = blobServiceClient.getBlobContainerClient(containerName);
         return containerClient.getBlobClient(blobName).exists();
     }
+    
     public void deleteBlob(String blobName) {
-    try {
-        BlobContainerClient containerClient = blobServiceClient.getBlobContainerClient(containerName);
-        BlobClient blobClient = containerClient.getBlobClient(blobName);
-        blobClient.deleteIfExists();
-    } catch (Exception e) {
-        // Log but don't throw - the DB record is more important to clean up
-        System.err.println("Failed to delete blob: " + blobName + " - " + e.getMessage());
+        try {
+            BlobContainerClient containerClient = blobServiceClient.getBlobContainerClient(containerName);
+            BlobClient blobClient = containerClient.getBlobClient(blobName);
+            blobClient.deleteIfExists();
+        } catch (Exception e) {
+            // Log but don't throw - the DB record is more important to clean up
+            System.err.println("Failed to delete blob: " + blobName + " - " + e.getMessage());
+        }
     }
-}
 }
