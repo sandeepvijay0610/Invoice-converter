@@ -80,7 +80,7 @@ services:
       azurite:
         condition: service_started
 
-  # 5. AI Worker(s)
+# 5. AI Worker(s)
   # Scale with: docker compose up --scale ai-worker=3
   ai-worker:
     build:
@@ -89,6 +89,14 @@ services:
     image: sap-invoice-pipeline
     restart: unless-stopped
     environment:
+      # --- NEW AZURE OPENAI VARS ---
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
+      - AZURE_OPENAI_KEY=${AZURE_OPENAI_KEY}
+      - AZURE_OPENAI_DEPLOYMENT=${AZURE_OPENAI_DEPLOYMENT}
+      - AZURE_OPENAI_API_VERSION=${AZURE_OPENAI_API_VERSION}
+      - MODEL_PROVIDER=azure
+      
+      # --- EXISTING VARS ---
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - MODEL_NAME=${MODEL_NAME:-gpt-4o}
       - MODEL_PROVIDER=${MODEL_PROVIDER}

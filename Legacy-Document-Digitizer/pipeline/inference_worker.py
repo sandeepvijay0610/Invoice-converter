@@ -1,8 +1,8 @@
 """
 inference_worker.py
 ===================
-Piece 2 — AI Worker Node: Multimodal invoice extraction via GitHub Models
-(GPT-4o / GPT-4o-mini), local Ollama, or Google Gemini.
+Piece 2 — AI Worker Node: Multimodal invoice extraction via Azure OpenAI,
+GitHub Models, local Ollama, or Google Gemini.
 
 Supports single-page and multi-page documents. All pages are sent to the
 model in a single API call and the result is returned as a flat entity list
@@ -20,11 +20,15 @@ from pathlib import Path
 from typing import Optional
 
 import requests
-from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI, RateLimitError
+from openai import APIConnectionError, APIStatusError, APITimeoutError, AzureOpenAI, OpenAI, RateLimitError
 from pydantic import BaseModel, Field
 
 from .config import (
     API_DELAY_SECONDS,
+    AZURE_OPENAI_API_VERSION,
+    AZURE_OPENAI_DEPLOYMENT,
+    AZURE_OPENAI_ENDPOINT,
+    AZURE_OPENAI_KEY,
     GEMINI_API_KEY,
     GEMINI_MODEL_NAME,
     GITHUB_ENDPOINT,
@@ -42,10 +46,7 @@ logger = logging.getLogger(__name__)
 
 
 class RateLimitExceeded(Exception):
-    """
-    Raised when the model API rejects a request due to rate limiting and
-    all configured retries (SDK-level + our own backoff loop) are exhausted.
-    """
+    """Raised when the model API rejects a request due to rate limiting."""
     pass
 
 
@@ -134,7 +135,7 @@ _MULTI_PAGE_SYSTEM_PROMPT = (
 # ---------------------------------------------------------------------------
 
 class InferenceWorker:
-    """Piece 2: Multimodal invoice extraction via GitHub Models, Ollama, or Gemini."""
+    """Piece 2: Multimodal invoice extraction via Azure, GitHub, Ollama, or Gemini."""
 
     def __init__(
         self,
@@ -152,14 +153,23 @@ class InferenceWorker:
         self._call_count = 0
         self._max_backoff_attempts = max_backoff_attempts
 
-        if provider == "ollama":
+        if provider == "azure":
+            self._client = AzureOpenAI(
+                azure_endpoint=AZURE_OPENAI_ENDPOINT,
+                api_key=AZURE_OPENAI_KEY,
+                api_version=AZURE_OPENAI_API_VERSION,
+                max_retries=max_retries,
+                timeout=timeout,
+            )
+            self._model = AZURE_OPENAI_DEPLOYMENT
+        elif provider == "ollama":
             self._ollama_url = endpoint or OLLAMA_BASE_URL
             self._client = None
         elif provider == "gemini":
             self._gemini_api_key = GEMINI_API_KEY
             self._gemini_model = model or GEMINI_MODEL_NAME
             self._client = None
-        else:
+        else:  # github (default)
             self._client = OpenAI(
                 base_url=endpoint,
                 api_key=api_key,
@@ -167,7 +177,7 @@ class InferenceWorker:
                 timeout=timeout,
             )
 
-        logger.info("InferenceWorker ready | provider=%s model=%s", provider, model)
+        logger.info("InferenceWorker ready | provider=%s model=%s", provider, self._model)
 
     # ------------------------------------------------------------------
     # Public API
@@ -205,6 +215,7 @@ class InferenceWorker:
                     image_b64_list[0] if total_pages == 1 else image_b64_list
                 )
             else:
+                # Azure and GitHub both use the same OpenAI SDK call
                 invoice = self._call_with_backoff(
                     self._call_model_single if total_pages == 1 else self._call_model_multi,
                     image_b64_list[0] if total_pages == 1 else image_b64_list
@@ -289,7 +300,7 @@ class InferenceWorker:
         return f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('utf-8')}"
 
     # ------------------------------------------------------------------
-    # Private — GitHub Models API calls
+    # Private — Azure / GitHub API calls (both use OpenAI SDK)
     # ------------------------------------------------------------------
 
     def _call_model_single(self, image_b64: str) -> _InvoiceSchema:
@@ -373,28 +384,17 @@ class InferenceWorker:
 
     def _call_gemini(self, image_b64_list: list[str], system_prompt: str) -> _InvoiceSchema:
         import google.generativeai as genai
-
         genai.configure(api_key=self._gemini_api_key)
         model = genai.GenerativeModel(self._gemini_model)
-
         schema_json = json.dumps(_InvoiceSchema.model_json_schema(), indent=2)
-        parts = [
-            system_prompt + "\n\nExtract the invoice data into this exact JSON schema. Return ONLY valid JSON, no other text:\n```json\n" + schema_json + "\n```"
-        ]
-
+        parts = [system_prompt + "\n\nExtract the invoice data into this exact JSON schema:\n```json\n" + schema_json + "\n```"]
         for b64 in image_b64_list:
             base64_data = b64.split(",", 1)[-1] if "," in b64 else b64
             parts.append({"mime_type": "image/png", "data": base64_data})
-
-        response = model.generate_content(
-            parts,
-            generation_config={"temperature": 0.0, "max_output_tokens": 4096},
-        )
-
+        response = model.generate_content(parts, generation_config={"temperature": 0.0, "max_output_tokens": 4096})
         raw_text = response.text
         if raw_text.startswith("```"):
             raw_text = raw_text.split("```json", 1)[-1].split("```", 1)[0]
-
         return _InvoiceSchema.model_validate_json(raw_text.strip())
 
     # ------------------------------------------------------------------
@@ -403,7 +403,6 @@ class InferenceWorker:
 
     def _schema_to_entities(self, invoice: _InvoiceSchema) -> list[dict]:
         from datetime import datetime
-
         entities: list[dict] = []
         hd = invoice.header_data
         fd = invoice.financial_data

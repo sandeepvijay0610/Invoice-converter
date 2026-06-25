@@ -26,17 +26,33 @@ def _get(key: str, default: str) -> str:
 # ---------------------------------------------------------------------------
 # API / Model
 # ---------------------------------------------------------------------------
-GITHUB_TOKEN: str = _get("GITHUB_TOKEN", "")  # Not required if using Gemini/Ollama
-MODEL_NAME: str = _get("MODEL_NAME", "gpt-4o-mini")
+MODEL_PROVIDER = _get("MODEL_PROVIDER", "github")  # "github", "azure", "ollama", or "gemini"
+
+# GitHub Models
+GITHUB_TOKEN: str = _get("GITHUB_TOKEN", "")
 GITHUB_ENDPOINT: str = _get("GITHUB_ENDPOINT", "https://models.inference.ai.azure.com")
+
+# Azure OpenAI
+AZURE_OPENAI_ENDPOINT: str = _get("AZURE_OPENAI_ENDPOINT", "")
+AZURE_OPENAI_KEY: str = _get("AZURE_OPENAI_KEY", "")
+AZURE_OPENAI_DEPLOYMENT: str = _get("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1")
+AZURE_OPENAI_API_VERSION: str = _get("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
+
+# Ollama
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+OLLAMA_MODEL_NAME = os.getenv("OLLAMA_MODEL_NAME", "phi3.5:vision")
+
+# Gemini
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-2.0-flash")
+
+# Model name (used as fallback)
+MODEL_NAME: str = _get("MODEL_NAME", "gpt-4o-mini")
+
+# Rate limiting
 API_DELAY_SECONDS: int = int(_get("API_DELAY_SECONDS", "4"))
 MAX_RETRIES: int = int(_get("MAX_RETRIES", "3"))
 TIMEOUT_SECONDS: int = int(_get("TIMEOUT_SECONDS", "120"))
-MODEL_PROVIDER = os.getenv("MODEL_PROVIDER", "github")  # "github", "ollama", or "gemini"
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
-OLLAMA_MODEL_NAME = os.getenv("OLLAMA_MODEL_NAME", "phi3.5:vision")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-2.0-flash")
 
 # ---------------------------------------------------------------------------
 # Ingestor (Piece 1)

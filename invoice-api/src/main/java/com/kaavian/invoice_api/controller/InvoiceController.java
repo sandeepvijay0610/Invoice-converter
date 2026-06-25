@@ -24,11 +24,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.Base64;
 
+// No @CrossOrigin here — CORS is handled globally in WebConfig.corsFilter().
+// Having both causes double CORS headers and is redundant.
 @RestController
 @RequestMapping("/api")
-@CrossOrigin(origins = "http://localhost:5173", methods = {RequestMethod.GET, RequestMethod.POST, RequestMethod.PUT, RequestMethod.DELETE, RequestMethod.OPTIONS})
 public class InvoiceController {
 
     private final InvoiceRepository repository;
@@ -36,17 +36,26 @@ public class InvoiceController {
     private final BlobStorageService storageService;
     private final MessageProducer messageProducer;
     private final SAPIntegrationService sapIntegrationService;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    // Injected Spring bean — not new ObjectMapper() which bypasses Spring's Jackson config
+    private final ObjectMapper objectMapper;
 
-    public InvoiceController(InvoiceRepository repository, UserRepository userRepository,
-                             BlobStorageService storageService, MessageProducer messageProducer,
-                             SAPIntegrationService sapIntegrationService) {
+    public InvoiceController(InvoiceRepository repository,
+                             UserRepository userRepository,
+                             BlobStorageService storageService,
+                             MessageProducer messageProducer,
+                             SAPIntegrationService sapIntegrationService,
+                             ObjectMapper objectMapper) {
         this.repository = repository;
         this.userRepository = userRepository;
         this.storageService = storageService;
         this.messageProducer = messageProducer;
         this.sapIntegrationService = sapIntegrationService;
+        this.objectMapper = objectMapper;
     }
+
+    // -------------------------------------------------------------------------
+    // Auth helpers — read the user ClerkJwtFilter attached to the request
+    // -------------------------------------------------------------------------
 
     private UUID getCurrentUserId() {
         var request = ((ServletRequestAttributes) RequestContextHolder.currentRequestAttributes()).getRequest();
@@ -63,32 +72,9 @@ public class InvoiceController {
         return user != null && "admin".equals(user.getRole());
     }
 
-    @PostMapping("/auth/login")
-    public ResponseEntity<Map<String, String>> login(@RequestHeader(value = "Authorization", required = false) String authHeader) {
-        if (authHeader == null || !authHeader.startsWith("Basic ")) {
-            return ResponseEntity.status(401).body(Map.of("error", "Missing credentials"));
-        }
-
-        String base64Credentials = authHeader.substring(6);
-        String credentials = new String(Base64.getDecoder().decode(base64Credentials));
-        String[] parts = credentials.split(":", 2);
-
-        if (parts.length != 2) {
-            return ResponseEntity.status(401).body(Map.of("error", "Invalid credentials format"));
-        }
-
-        var userOpt = userRepository.findByUsername(parts[0]);
-        if (userOpt.isEmpty() || !userOpt.get().getPassword().equals(parts[1])) {
-            return ResponseEntity.status(401).body(Map.of("error", "Invalid username or password"));
-        }
-
-        User user = userOpt.get();
-        return ResponseEntity.ok(Map.of(
-            "username", user.getUsername(),
-            "tenantName", user.getTenantName(),
-            "role", user.getRole()
-        ));
-    }
+    // -------------------------------------------------------------------------
+    // Upload
+    // -------------------------------------------------------------------------
 
     @PostMapping("/invoices/request-upload")
     public ResponseEntity<Map<String, String>> requestUpload(@RequestBody Map<String, String> body) {
@@ -115,9 +101,7 @@ public class InvoiceController {
     @PostMapping("/invoices/{id}/process")
     public ResponseEntity<?> triggerProcessing(@PathVariable String id) {
         Invoice invoice = repository.findByDocId(id);
-        if (invoice == null) {
-            return ResponseEntity.notFound().build();
-        }
+        if (invoice == null) return ResponseEntity.notFound().build();
 
         if (!storageService.blobExists(invoice.getFilePath())) {
             return ResponseEntity.badRequest().body(Map.of(
@@ -132,6 +116,10 @@ public class InvoiceController {
         return ResponseEntity.ok(Map.of("message", "Processing started for " + id));
     }
 
+    // -------------------------------------------------------------------------
+    // List & Detail
+    // -------------------------------------------------------------------------
+
     @GetMapping("/invoices")
     public ResponseEntity<Map<String, Object>> listInvoices(
             @RequestParam(required = false) String status,
@@ -140,10 +128,9 @@ public class InvoiceController {
 
         int safeSize = Math.min(Math.max(size, 1), 100);
         Pageable pageable = PageRequest.of(Math.max(page, 0), safeSize, Sort.by("createdAt").descending());
-
         UUID userId = getCurrentUserId();
-        Page<Invoice> result;
 
+        Page<Invoice> result;
         if (isAdmin() && (status == null || status.isBlank())) {
             result = repository.findAllByOrderByCreatedAtDesc(pageable);
         } else if (isAdmin()) {
@@ -171,22 +158,22 @@ public class InvoiceController {
     @GetMapping("/invoices/{id}")
     public ResponseEntity<Map<String, Object>> getInvoice(@PathVariable String id) {
         Invoice invoice = repository.findByDocId(id);
-        if (invoice == null) {
-            return ResponseEntity.notFound().build();
-        }
+        if (invoice == null) return ResponseEntity.notFound().build();
         return ResponseEntity.ok(toDetailDto(invoice));
     }
+
+    // -------------------------------------------------------------------------
+    // Retry & Delete
+    // -------------------------------------------------------------------------
 
     @PostMapping("/invoices/{id}/retry")
     public ResponseEntity<Map<String, String>> retryInvoice(@PathVariable String id) {
         Invoice invoice = repository.findByDocId(id);
-        if (invoice == null) {
-            return ResponseEntity.notFound().build();
-        }
+        if (invoice == null) return ResponseEntity.notFound().build();
 
         if (invoice.getFilePath() == null || invoice.getFilePath().isBlank()) {
             return ResponseEntity.badRequest().body(Map.of(
-                    "error", "Invoice has no associated file_path to reprocess"
+                    "error", "Invoice has no associated file to reprocess"
             ));
         }
 
@@ -204,16 +191,13 @@ public class InvoiceController {
     @DeleteMapping("/invoices/{id}")
     public ResponseEntity<Map<String, String>> deleteInvoice(@PathVariable String id) {
         Invoice invoice = repository.findByDocId(id);
-        if (invoice == null) {
-            return ResponseEntity.notFound().build();
-        }
+        if (invoice == null) return ResponseEntity.notFound().build();
 
-        // Block deletion if the invoice is currently being processed by a worker.
-        // Without this, the worker finishes and tries to update a DB row that no
-        // longer exists, causing a silent error in the worker logs.
+        // Prevent deleting while a worker is processing — the worker would finish
+        // and try to update a DB row that no longer exists
         if ("PROCESSING".equals(invoice.getStatus())) {
             return ResponseEntity.badRequest().body(Map.of(
-                "error", "Cannot delete an invoice that is currently processing. Wait for it to finish or fail first."
+                    "error", "Cannot delete an invoice that is currently processing. Wait for it to finish or fail first."
             ));
         }
 
@@ -222,34 +206,28 @@ public class InvoiceController {
         }
 
         repository.delete(invoice);
-
-        return ResponseEntity.ok(Map.of(
-            "id", id,
-            "message", "Invoice deleted successfully"
-        ));
+        return ResponseEntity.ok(Map.of("id", id, "message", "Invoice deleted successfully"));
     }
 
-@PostMapping("/invoices/{id}/export")
+    // -------------------------------------------------------------------------
+    // SAP Export
+    // -------------------------------------------------------------------------
+
+    @PostMapping("/invoices/{id}/export-sap")
     public ResponseEntity<?> exportToSAP(@PathVariable String id) {
         Invoice invoice = repository.findByDocId(id);
-        if (invoice == null) {
-            return ResponseEntity.notFound().build();
-        }
+        if (invoice == null) return ResponseEntity.notFound().build();
 
-        // FIX: We now explicitly allow both READY_FOR_SAP and SAP_EXPORTED statuses
-        // FIX: Handle both underscore and space versions of the status
         String status = invoice.getStatus();
-        if (!"READY_FOR_SAP".equals(status) && !"READY FOR SAP".equals(status) 
-            && !"SAP_EXPORTED".equals(status) && !"SAP EXPORTED".equals(status)) {
+        if (!"READY_FOR_SAP".equals(status) && !"SAP_EXPORTED".equals(status)) {
             return ResponseEntity.badRequest().body(Map.of(
-                "error", "Invoice must be in READY_FOR_SAP status to export. Current status: " + status
+                    "error", "Invoice must be READY_FOR_SAP to export. Current status: " + status
             ));
         }
 
-        // Ownership check — users can only export their own invoices
         if (!invoice.getUserId().equals(getCurrentUserId()) && !isAdmin()) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                .body(Map.of("error", "You do not have permission to export this invoice"));
+                    .body(Map.of("error", "You do not have permission to export this invoice"));
         }
 
         try {
@@ -257,10 +235,13 @@ public class InvoiceController {
             return ResponseEntity.ok(result);
         } catch (SAPIntegrationService.SAPExportException e) {
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
-                .body(Map.of("error", e.getMessage()));
+                    .body(Map.of("error", e.getMessage()));
         }
     }
 
+    // -------------------------------------------------------------------------
+    // DTOs — keep presentation logic out of the entity
+    // -------------------------------------------------------------------------
 
     private Map<String, Object> toSummaryDto(Invoice invoice) {
         Map<String, Object> dto = new LinkedHashMap<>();
@@ -283,6 +264,7 @@ public class InvoiceController {
         dto.put("invoiceNumber", invoice.getInvoiceNumber());
         dto.put("totalAmount", invoice.getTotalAmount());
         dto.put("companyCode", invoice.getCompanyCode());
+        dto.put("sapDocumentId", invoice.getSapDocumentId());
         dto.put("createdAt", invoice.getCreatedAt());
 
         JsonNode parsedPayload = null;
@@ -290,12 +272,9 @@ public class InvoiceController {
         if (rawPayload != null && !rawPayload.isBlank()) {
             try {
                 parsedPayload = objectMapper.readTree(rawPayload);
-            } catch (Exception e) {
-                parsedPayload = null;
-            }
+            } catch (Exception ignored) { }
         }
         dto.put("extractedPayload", parsedPayload);
-
         return dto;
     }
 }

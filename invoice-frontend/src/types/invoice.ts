@@ -1,6 +1,18 @@
+// All statuses use SNAKE_CASE throughout — backend, frontend, and DB are consistent.
+// StatusBadge converts underscores to spaces purely for display.
+
+export type InvoiceStatus =
+  | 'PENDING'
+  | 'PROCESSING'
+  | 'READY_FOR_SAP'
+  | 'SAP_EXPORTED'
+  | 'REQUIRES_MANUAL_REVIEW'
+  | 'FAILED'
+  | 'RATE_LIMITED';
+
 export interface InvoiceSummary {
   id: string;
-  status: 'PENDING' | 'PROCESSING' | 'READY FOR SAP' | 'SAP EXPORTED' | 'REQUIRES MANUAL REVIEW' | 'FAILED' | 'RATE LIMITED';
+  status: InvoiceStatus;
   vendorName: string | null;
   invoiceNumber: string | null;
   totalAmount: number | null;
@@ -61,12 +73,4 @@ export interface PaginatedResponse {
 export interface UploadResponse {
   id: string;
   uploadUrl: string;
-}
-
-export interface StatsResponse {
-  total: number;
-  readyForSAP: number;
-  processing: number;
-  needsReview: number;
-  failed: number;
 }
