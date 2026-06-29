@@ -34,14 +34,14 @@ public class WebConfig {
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/api/**", config);
+        // ADDED THIS LINE: Tell CORS to allow SAP to read the OData feed
+        source.registerCorsConfiguration("/odata/**", config); 
 
         FilterRegistrationBean<CorsFilter> bean = new FilterRegistrationBean<>(new CorsFilter(source));
         bean.setOrder(0);
         return bean;
     }
 
-    // ClerkJwtFilter is NOT a @Component — we create it manually here so Spring
-    // only registers it once, avoiding the BeanDefinitionOverrideException.
     @Bean
     public FilterRegistrationBean<ClerkJwtFilter> clerkJwtFilter(UserRepository userRepository) throws Exception {
         ClerkJwtFilter filter = new ClerkJwtFilter(userRepository, jwksUrl, clerkIssuer);

@@ -46,8 +46,9 @@ public class ClerkJwtFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        // Only skip CORS preflight — OPTIONS must be allowed through before auth
-        return "OPTIONS".equalsIgnoreCase(request.getMethod());
+        // Skip CORS preflight AND skip the new SAP OData endpoint
+        String path = request.getServletPath();
+        return "OPTIONS".equalsIgnoreCase(request.getMethod()) || path.startsWith("/odata/");
     }
 
     @Override
