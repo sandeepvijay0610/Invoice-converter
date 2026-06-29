@@ -1,40 +1,35 @@
-import React from 'react';
+import type { InvoiceStatus } from '../../types/invoice';
+
+// Map from SNAKE_CASE status → display label + colour classes
+const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
+  PENDING:                { label: 'Pending',        className: 'bg-yellow-50 text-yellow-700 ring-yellow-200' },
+  PROCESSING:             { label: 'Processing',     className: 'bg-blue-50 text-blue-700 ring-blue-200' },
+  READY_FOR_SAP:          { label: 'Ready for SAP',  className: 'bg-violet-50 text-violet-700 ring-violet-200' },
+  SAP_EXPORTED:           { label: 'SAP Exported',   className: 'bg-emerald-50 text-emerald-700 ring-emerald-200' },
+  FAILED:                 { label: 'Failed',         className: 'bg-red-50 text-red-700 ring-red-200' },
+  RATE_LIMITED:           { label: 'Rate Limited',   className: 'bg-red-50 text-red-700 ring-red-200' },
+  REQUIRES_MANUAL_REVIEW: { label: 'Needs Review',   className: 'bg-orange-50 text-orange-700 ring-orange-200' },
+};
 
 interface StatusBadgeProps {
-  status: string;
+  status: InvoiceStatus | string;
+  size?: 'sm' | 'md' | 'lg';
 }
 
-export const StatusBadge: React.FC<StatusBadgeProps> = ({ status }) => {
-  // FIX: Normalize the string so "SAP EXPORTED" and "SAP_EXPORTED" are treated the exact same way
-  const normalizedStatus = status.replace(/ /g, '_').toUpperCase();
+export function StatusBadge({ status, size = 'md' }: StatusBadgeProps) {
+  // Normalise — handles both SNAKE_CASE and legacy "SPACE CASE" strings
+  const key = status.replace(/ /g, '_').toUpperCase();
+  const config = STATUS_CONFIG[key] ?? { label: status, className: 'bg-gray-50 text-gray-600 ring-gray-200' };
 
-  const getStatusStyles = (statusCode: string) => {
-    switch (statusCode) {
-      case 'PENDING':
-        return 'bg-yellow-100 text-yellow-800 border-yellow-300 shadow-sm';
-      case 'PROCESSING':
-        return 'bg-blue-100 text-blue-800 border-blue-300 shadow-sm';
-      case 'READY_FOR_SAP':
-        return 'bg-purple-100 text-purple-800 border-purple-300 shadow-sm';
-      case 'SAP_EXPORTED':
-        return 'bg-emerald-100 text-emerald-800 border-emerald-300 shadow-sm';
-      case 'FAILED':
-      case 'RATE_LIMITED':
-        return 'bg-red-100 text-red-800 border-red-300 shadow-sm';
-      default:
-        // The gray fallback
-        return 'bg-gray-100 text-gray-800 border-gray-300 shadow-sm';
-    }
-  };
-
-  const formatStatus = (rawStatus: string) => {
-    // Replaces underscores with spaces so the UI always looks clean (e.g. "SAP EXPORTED")
-    return rawStatus.replace(/_/g, ' ');
-  };
+  const sizeClass = size === 'sm'
+    ? 'px-2 py-0.5 text-xs'
+    : size === 'lg'
+      ? 'px-3 py-1.5 text-sm'
+      : 'px-2.5 py-0.5 text-xs';
 
   return (
-    <span className={`px-3 py-1 rounded-full text-xs font-semibold border ${getStatusStyles(normalizedStatus)} uppercase tracking-wider`}>
-      {formatStatus(status)}
+    <span className={`inline-flex items-center font-medium rounded-full ring-1 ${config.className} ${sizeClass}`}>
+      {config.label}
     </span>
   );
-};
+}

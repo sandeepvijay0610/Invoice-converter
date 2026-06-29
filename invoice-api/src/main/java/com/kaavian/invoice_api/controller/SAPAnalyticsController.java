@@ -85,7 +85,7 @@ public class SAPAnalyticsController {
             
             return map;
         }).toList();
-
+        
         Map<String, Object> results = new HashMap<>();
         results.put("results", cleanInvoices);
         

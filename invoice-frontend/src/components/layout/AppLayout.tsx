@@ -2,55 +2,67 @@ import { Link, useLocation } from 'react-router-dom';
 import { UserButton, useUser } from '@clerk/clerk-react';
 import { LayoutDashboard, Upload, FileText } from 'lucide-react';
 import clsx from 'clsx';
+import type { ReactNode } from 'react';
 
 const NAV_ITEMS = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/batch-upload', icon: Upload, label: 'Batch Upload' },
 ];
 
-export function AppLayout({ children }: { children: React.ReactNode }) {
+export function AppLayout({ children }: { children: ReactNode }) {
   const location = useLocation();
   const { user } = useUser();
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <aside className="fixed left-0 top-0 h-full w-64 bg-white border-r border-gray-200 flex flex-col">
-        <div className="p-6 border-b border-gray-100">
-          <Link to="/" className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
-              <FileText className="w-5 h-5 text-white" />
+    <div className="min-h-screen bg-gray-50 flex">
+      <aside className="fixed left-0 top-0 h-full w-52 bg-white border-r border-gray-100 flex flex-col z-20">
+
+        {/* Logo */}
+        <div className="px-5 py-4 border-b border-gray-100">
+          <Link to="/" className="flex items-center gap-2.5">
+            <div className="w-7 h-7 bg-gray-900 rounded-lg flex items-center justify-center">
+              <FileText className="w-3.5 h-3.5 text-white" />
             </div>
-            <span className="font-semibold text-gray-900">InvoiceFlow</span>
+            <span className="font-semibold text-gray-900 text-sm">InvoiceFlow</span>
           </Link>
         </div>
-        <nav className="flex-1 p-4 space-y-1">
+
+        {/* Nav */}
+        <nav className="flex-1 p-3 space-y-0.5">
           {NAV_ITEMS.map(({ to, icon: Icon, label }) => (
             <Link
               key={to}
               to={to}
               className={clsx(
-                'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
+                'flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-all',
                 location.pathname === to
-                  ? 'bg-indigo-50 text-indigo-700'
-                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                  ? 'bg-gray-900 text-white'
+                  : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
               )}
             >
-              <Icon className="w-5 h-5" />
+              <Icon className="w-4 h-4 flex-shrink-0" />
               {label}
             </Link>
           ))}
         </nav>
-        <div className="p-4 border-t border-gray-100 space-y-3">
-          <div className="flex items-center gap-2">
+
+        {/* User */}
+        <div className="p-3 border-t border-gray-100">
+          <div className="flex items-center gap-2.5 px-2 py-2 rounded-lg hover:bg-gray-50 transition-colors">
             <UserButton />
-            <span className="text-sm text-gray-600">
-              {user?.fullName || user?.primaryEmailAddress?.emailAddress}
-            </span>
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-gray-700 truncate">
+                {user?.fullName || 'User'}
+              </p>
+              <p className="text-xs text-gray-400 truncate">
+                {user?.primaryEmailAddress?.emailAddress}
+              </p>
+            </div>
           </div>
-          <p className="text-xs text-gray-400">Legacy Document Digitizer v1.0</p>
         </div>
       </aside>
-      <main className="ml-64 p-8">
+
+      <main className="ml-52 flex-1 p-6 min-h-screen">
         {children}
       </main>
     </div>
